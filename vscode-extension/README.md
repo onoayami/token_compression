@@ -5,6 +5,8 @@ VS Codeのチャットに **@contextkit 初期設定** と入力すると、初�
 
 ## 導入
 
+**現時点ではVSIXは未公開です。自動配布設定の追加がGitHubの権限エラーで停止しています。** リポジトリの `docs/FIRST-RELEASE.md` に管理者向けの初回公開手順があります。以下は公開後の導入方法です。
+
 1. [GitHub Releases](https://github.com/onoayami/token_compression/releases/latest) から **contextkit.vsix** をダウンロード（公開前はまだ表示されません。`Source code.zip` ではありません）。
 2. VS Codeの拡張機能画面で「…」→「VSIXからのインストール」を選び、このファイルを指定。
 3. 作業用フォルダをVS Codeで開く。

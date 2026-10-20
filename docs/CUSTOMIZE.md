@@ -78,6 +78,6 @@ Copilot の認証情報の読み取り、通信先の強制変更、非公開API
 3. Node.js 22以上のビルド環境で、公式 `@vscode/vsce@4.0.0` の `vsce package --no-dependencies` を実行。一般の利用者にはできたVSIXだけを渡す。
 4. 実際のVS Code上で `docs/VERIFICATION.md` の受け入れチェックを実施。
 
-`.github/workflows/release-vsix.yml` はmainの拡張関連変更でテスト・パッケージ作成・GitHub Releaseを行います。実行にはActionsの利用と `contents: write` が必要です。既存の公開版は置換せず、次回はroot package・拡張manifest・サーバー表示・接続定義・テスト中の版を揃えて更新してください。Marketplaceへの自動公開は行いません。
+`integration/release-vsix.workflow.yml` が配布設定のテンプレートです。現在の接続ではWorkflowsへの書き込みが403となったため、`.github/workflows/release-vsix.yml` としての登録は未完了です。[初回公開手順](FIRST-RELEASE.md) に沿って管理者が確認・登録してください。登録後はmainの拡張関連変更でテスト・パッケージ作成・GitHub Releaseを行います。実行にはActionsの利用と `contents: write` が必要です。既存の公開版は置換せず、次回はroot package・拡張manifest・サーバー表示・接続定義・テスト中の版を揃えて更新してください。Marketplaceへの自動公開は行いません。
 
 拡張実行時には外部Node・npm・Python・vsceは不要です。127.0.0.1のサーバーはVS Codeの拡張ホスト内で動かします。リモート開発への対応を増やす場合、拡張の実行側とファイルの所在・アクセス範囲を先に設計してください。

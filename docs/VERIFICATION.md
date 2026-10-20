@@ -47,7 +47,7 @@ npm test
 - 模擬VS Code APIでチャット起動→確認→保存→MCP登録→実HTTPツール呼び出し→停止・再開を確認する。
 - 配布用ステージにコードと雛形だけが入り、テスト・私的キャッシュ・依存パッケージが混ざらないことを確認する。
 
-**APIの模擬テストは、実際のVS Code UI・Copilot連携の検証を代替しません。** VSIXは公式 `@vscode/vsce` をGitHub Actionsで実行して生成する構成です。ビルドの成否はActionsとReleasesで確認します。
+**APIの模擬テストは、実際のVS Code UI・Copilot連携の検証を代替しません。** VSIXは公式 `@vscode/vsce` をGitHub Actionsで実行して生成する構成です。現時点では自動配布設定の追加権限が不足し、ActionsでのVSIX作成・公開は未実施です。初回公開後にビルドの成否をActionsとReleasesで確認します。
 
 ## 配布前に確認した環境
 

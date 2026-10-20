@@ -1,0 +1,47 @@
+name: Build and release easy-install VSIX
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'vscode-extension/**'
+      - 'src/**'
+      - 'project-context/**'
+      - 'integration/prompts/**'
+      - 'scripts/stage-extension.py'
+      - '.github/workflows/release-vsix.yml'
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Test sources and setup protections
+        run: npm test
+      - name: Stage extension without private project data
+        run: python3 scripts/stage-extension.py
+      - name: Package with official VS Code tool
+        working-directory: dist/extension
+        run: npx --yes --package=@vscode/vsce@4.0.0 -- vsce package --no-dependencies --out ../contextkit.vsix
+      - name: Release installable file
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(node -p "require('./vscode-extension/package.json').version")
+          tag="v${version}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag already exists. Bump the extension version instead of replacing a published package."
+            exit 1
+          fi
+          sha256sum dist/contextkit.vsix > dist/contextkit.vsix.sha256
+          gh release create "$tag" dist/contextkit.vsix dist/contextkit.vsix.sha256 \
+            --target "$GITHUB_SHA" --title "Context Kit $tag — かんたん導入版" \
+            --notes-file vscode-extension/RELEASE-NOTES.md
