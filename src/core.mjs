@@ -278,10 +278,12 @@ export class ContextKit {
             if (!alive) {
               const reclaim = `${lockfile}.reclaim.${randomUUID()}`;
               try {
+                const confirmed = JSON.parse(await fs.readFile(lockfile, 'utf8'));
+                if (confirmed.token !== current.token) continue;
                 await fs.rename(lockfile, reclaim);
                 const reclaimed = JSON.parse(await fs.readFile(reclaim, 'utf8'));
-                if (reclaimed.token === current.token) await fs.unlink(reclaim);
-                else await fs.unlink(reclaim);
+                await fs.unlink(reclaim);
+                if (reclaimed.token !== current.token) continue;
               } catch (reclaimError) {
                 if (!['ENOENT', 'EEXIST'].includes(reclaimError.code)) throw reclaimError;
               }
