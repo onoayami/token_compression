@@ -64,7 +64,7 @@ export async function activate(context, vscode, {
       return handle(request);
     }); root = selected;
     try { httpDefinition(vscode, server.endpoint, server.token); }
-    catch (e) { await stop(); throw e; }
+    catch (e) { await stopNow(); throw e; }
     changed.fire();
   };
   const start = selected => {

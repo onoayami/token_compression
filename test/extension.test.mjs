@@ -201,6 +201,33 @@ test('a concurrent stop waits for start and closes the only local server', async
   assert.equal(state.starts, 1);
   assert.equal(state.closes, 1);
 });
+test('failed server registration closes the server and allows a later start', async t => {
+  let starts = 0, closes = 0;
+  const startServer = async () => {
+    starts++;
+    return {
+      endpoint: `http://127.0.0.1:51234/failing-${starts}`,
+      token: 'test-token',
+      close: async () => { closes++; },
+    };
+  };
+  const { root, vscode, manager } = await fixture(t, { startServer, exposeLifecycle: true });
+  vscode.McpHttpServerDefinition = class BrokenHttpDefinition {
+    constructor() { throw new Error('injected registration failure'); }
+  };
+  let timeoutId;
+  const timeout = new Promise((_, reject) => { timeoutId = setTimeout(() => reject(new Error('start timed out')), 250); });
+  try {
+    await assert.rejects(Promise.race([manager.start(root), timeout]), /MCP登録API|timed out/);
+  } finally {
+    clearTimeout(timeoutId);
+  }
+  assert.equal(closes, 1);
+  vscode.McpHttpServerDefinition = PositionalHttpDefinition;
+  await manager.start(root);
+  assert.equal(starts, 2);
+  assert.equal(closes, 1);
+});
 test('staging uses official-package layout, includes runtime/templates and excludes tests, caches and dependencies', async t => {
   const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'context-kit-stage-')); t.after(() => fs.rm(temp, { recursive: true, force: true }));
   const out = path.join(temp, 'extension');
