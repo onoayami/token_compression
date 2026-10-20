@@ -188,6 +188,7 @@ export class ContextKit {
   constructor(root, config, realRoot = root) {
     this.root = root; this.realRoot = realRoot; this.config = config; this.cache = path.join(root, CACHE);
     this.snapshotIndex = new Map();
+    this.lockWriter = (handle, owner) => handle.writeFile(JSON.stringify(owner));
   }
 
   checkRelative(relative) {
@@ -260,7 +261,21 @@ export class ContextKit {
     for (let attempt = 0; attempt < 200; attempt++) {
       try {
         handle = await fs.open(lockfile, 'wx', 0o600);
-        await handle.writeFile(JSON.stringify(owner));
+        try {
+          await this.lockWriter(handle, owner);
+        } catch (writeError) {
+          try { await handle.close(); } catch (closeError) { console.error(`Cache lock close failed: ${closeError.message}`); }
+          try {
+            const raw = await fs.readFile(lockfile, 'utf8');
+            let current = null;
+            try { current = JSON.parse(raw); } catch { /* Empty or partial content is ours during failed acquisition. */ }
+            if (!raw || current?.token === owner.token) await fs.unlink(lockfile);
+          } catch (cleanupError) {
+            if (cleanupError.code !== 'ENOENT') console.error(`Cache lock cleanup failed: ${cleanupError.message}`);
+          }
+          handle = undefined;
+          throw writeError;
+        }
         break;
       } catch (error) {
         if (error.code !== 'EEXIST') throw error;
@@ -279,11 +294,17 @@ export class ContextKit {
               const reclaim = `${lockfile}.reclaim.${randomUUID()}`;
               try {
                 const confirmed = JSON.parse(await fs.readFile(lockfile, 'utf8'));
-                if (confirmed.token !== current.token) continue;
+                if (confirmed.token !== current.token) {
+                  console.error('Cache lock ownership changed before reclaim; retrying');
+                  continue;
+                }
                 await fs.rename(lockfile, reclaim);
                 const reclaimed = JSON.parse(await fs.readFile(reclaim, 'utf8'));
                 await fs.unlink(reclaim);
-                if (reclaimed.token !== current.token) continue;
+                if (reclaimed.token !== current.token) {
+                  console.error('Cache lock ownership changed during reclaim; retrying');
+                  continue;
+                }
               } catch (reclaimError) {
                 if (!['ENOENT', 'EEXIST'].includes(reclaimError.code)) throw reclaimError;
               }
@@ -298,12 +319,16 @@ export class ContextKit {
     if (!handle) throw new PublicError('CONTEXT_KIT_ERROR', 'Cache is busy; retry later');
     try { return await fn(); }
     finally {
-      await handle.close();
+      try {
+        await handle.close();
+      } catch (error) { console.error(`Cache lock close failed: ${error.message}`); }
       try {
         const current = JSON.parse(await fs.readFile(lockfile, 'utf8'));
         if (current.token === owner.token && current.pid === owner.pid && current.hostname === owner.hostname)
           await fs.unlink(lockfile);
-      } catch (error) { if (error.code !== 'ENOENT') throw error; }
+      } catch (error) {
+        if (error.code !== 'ENOENT') console.error(`Cache lock release failed: ${error.message}`);
+      }
     }
   }
   async cacheFiles() {

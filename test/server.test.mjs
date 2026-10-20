@@ -82,6 +82,7 @@ test('MCP unknown methods, tools, parameters and invalid types are rejected', as
 test('tool schemas explicitly describe side effects and only four tools are exposed', () => {
   assert.equal(TOOLS.length, 4);
   for (const tool of TOOLS) { assert.equal(tool.annotations.destructiveHint, false); assert.equal(tool.inputSchema.additionalProperties, false); }
+  assert.equal(TOOLS.find(tool => tool.name === 'kit_source').inputSchema.properties.expected_sha256.pattern, '^[0-9a-fA-F]{64}$');
 });
 test('real stdio process speaks newline-delimited JSON-RPC with clean stdout', async t => {
   const { root } = await setup(t);

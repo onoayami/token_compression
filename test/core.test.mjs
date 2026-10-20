@@ -79,6 +79,8 @@ test('a wrong quote is reported false; hash mismatch is an error', async t => {
   const { meta } = parse(await kit.read('spec.txt'));
   const result = parse(await kit.retrieve({ snapshot_id: meta.snapshot_id, quote: 'Deadline: Monday' }));
   assert.equal(result.meta.quote_match_in_requested_lines, false);
+  const uppercase = parse(await kit.retrieve({ snapshot_id: meta.snapshot_id, expected_sha256: meta.sha256.toUpperCase() }));
+  assert.equal(uppercase.meta.integrity_status, 'matched-external-expected-hash');
   await assert.rejects(() => kit.retrieve({ snapshot_id: meta.snapshot_id, expected_sha256: 'incorrect' }), /SHA-256/);
 });
 test('UTF-8 BOM and CRLF remain intact in the saved source', async t => {
@@ -164,6 +166,7 @@ test('external hash checking detects a tampered snapshot while omission is self-
   assert.equal(selfReported.meta.integrity_status, 'self-reported-only');
   await assert.rejects(() => kit.retrieve({ snapshot_id: meta.snapshot_id, expected_sha256: meta.sha256 }), /SHA-256/);
   await assert.rejects(() => kit.retrieve({ snapshot_id: meta.snapshot_id, expected_sha256: 'invalid' }), /64-character/);
+  await assert.rejects(() => kit.retrieve({ snapshot_id: meta.snapshot_id, expected_sha256: '' }), error => error.code === 'INVALID_ARGUMENT');
 });
 test('metrics include returned metadata/retrieval and can show net overhead', async t => {
   const { kit, write } = await fixture(t); await write('a.txt', 'short');
@@ -233,6 +236,20 @@ test('incomplete lock contents wait and end as busy rather than throwing JSON sy
   const lock = path.join(kit.cache, '.lock');
   await fs.writeFile(lock, '');
   await assert.rejects(() => kit.withCacheLock(async () => {}), /Cache is busy/);
+});
+test('lock write failure closes and removes the lock before rethrowing', async t => {
+  const { kit } = await fixture(t);
+  kit.lockWriter = async () => { throw new Error('injected lock write failure'); };
+  await assert.rejects(() => kit.withCacheLock(async () => {}), /injected lock write failure/);
+  assert.equal(await fs.stat(path.join(kit.cache, '.lock')).catch(error => error.code), 'ENOENT');
+});
+test('corrupt lock during release does not replace the callback result', async t => {
+  const { kit } = await fixture(t);
+  const result = await kit.withCacheLock(async () => {
+    await fs.writeFile(path.join(kit.cache, '.lock'), '{broken');
+    return 'preserved';
+  });
+  assert.equal(result, 'preserved');
 });
 test('concurrent stale-lock recovery admits only one critical section', async t => {
   const { kit } = await fixture(t);

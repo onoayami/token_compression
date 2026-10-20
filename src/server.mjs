@@ -16,7 +16,7 @@ export const TOOLS = [
     name: 'kit_source',
     description: 'Retrieve original source line ranges from a saved snapshot, with SHA-256 and current-file change status. Optional quote verifies a literal match, not semantic support. Use for important numbers/conditions and source-backed handoffs. Large ranges use Unicode-character pagination.',
     inputSchema: { type: 'object', additionalProperties: false, properties: {
-      snapshot_id: { type: 'string' }, expected_sha256: { type: 'string' },
+      snapshot_id: { type: 'string' }, expected_sha256: { type: 'string', pattern: '^[0-9a-fA-F]{64}$' },
       start_line: { type: 'integer', minimum: 1 }, end_line: { type: 'integer', minimum: 1 },
       offset: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 32000 },
       quote: { type: 'string', minLength: 1, maxLength: 1000 },
@@ -83,6 +83,7 @@ export function createHandler(kit) {
         if ((rule.type === 'string' && typeof value !== 'string') ||
             (rule.type === 'integer' && !Number.isInteger(value)) ||
             (rule.enum && !rule.enum.includes(value)) ||
+            (rule.pattern && (typeof value !== 'string' || !new RegExp(rule.pattern).test(value))) ||
             (rule.minimum !== undefined && value < rule.minimum) ||
             (rule.maximum !== undefined && value > rule.maximum) ||
             (rule.minLength !== undefined && Array.from(value).length < rule.minLength) ||
