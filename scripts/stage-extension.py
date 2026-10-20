@@ -27,7 +27,7 @@ for folder in ['src','project-context','integration/prompts']:
                 raise SystemExit('Unexpected private/symlinked package input')
             destination=target/relative;destination.parent.mkdir(parents=True,exist_ok=True)
             shutil.copyfile(p,destination)
-manifest=json.loads((out/'package.json').read_text())
+manifest=json.loads((out/'package.json').read_text(encoding='utf-8'))
 if not (out/manifest['main']).is_file():raise SystemExit('Missing extension entrypoint')
 if (out/'node_modules').exists():raise SystemExit('Unexpected dependencies')
 print('Staged extension:',manifest['version'],'files:',sum(p.is_file() for p in out.rglob('*')))
