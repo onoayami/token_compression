@@ -1,0 +1,13 @@
+{
+  "servers": {
+    "context-kit": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "${workspaceFolder}/src/server.mjs",
+        "--root",
+        "${workspaceFolder}"
+      ]
+    }
+  }
+}

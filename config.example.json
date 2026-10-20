@@ -1,0 +1,12 @@
+{
+  "maxInputBytes": 2097152,
+  "maxOutputChars": 12000,
+  "maxPageChars": 12000,
+  "cacheTTLHours": 168,
+  "maxCacheBytes": 67108864,
+  "previewHead": 15,
+  "previewTail": 15,
+  "contextLines": 2,
+  "extraBlockedPaths": ["private", "customer-data"],
+  "extraProtectedWords": ["要確認", "締切", "キャンセル"]
+}

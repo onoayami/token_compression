@@ -1,0 +1,10 @@
+{
+  "demo_only": true,
+  "exact_integer": 900719925474099312345,
+  "note": "Spaces  inside strings stay unchanged.",
+  "items": [
+    { "id": 1, "status": "ok" },
+    { "id": 2, "status": "warning" },
+    { "id": 3, "status": "ok" }
+  ]
+}

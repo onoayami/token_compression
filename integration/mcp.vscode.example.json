@@ -1,0 +1,13 @@
+{
+  "servers": {
+    "context-kit": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "${workspaceFolder}/tools/copilot-context-kit/src/server.mjs",
+        "--root",
+        "${workspaceFolder}"
+      ]
+    }
+  }
+}
