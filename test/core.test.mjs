@@ -154,7 +154,7 @@ test('custom blocked prefixes and critical words work', async t => {
 test('invalid UTF-8, binary and oversized files are rejected', async t => {
   const { kit, root, write } = await fixture(t, { maxInputBytes: 1024 });
   await write('large.txt', 'x'.repeat(1025)); await assert.rejects(() => kit.read('large.txt'), /limit/);
-  await fs.writeFile(path.join(root, 'binary.txt'), Buffer.from([0xff, 0xfe])); await assert.rejects(() => kit.read('binary.txt'));
+  await fs.writeFile(path.join(root, 'binary.txt'), Buffer.from([0xff, 0xff])); await assert.rejects(() => kit.read('binary.txt'));
   await write('nul.txt', 'a\0b'); await assert.rejects(() => kit.read('nul.txt'), /Binary/);
 });
 test('BOM JSON is parsed without changing source text or hash', async t => {
@@ -168,6 +168,30 @@ test('BOM JSON is parsed without changing source text or hash', async t => {
   await write('hard.json', '{"x":1}');
   await fs.link(path.join(root, 'hard.json'), path.join(root, 'hard-copy.json'));
   await assert.rejects(() => kit.read('hard.json'), error => error.code === 'BLOCKED');
+});
+test('BOM UTF-16LE and UTF-16BE preserve text, encoding metadata and decoded hashes', async t => {
+  const { root, kit } = await fixture(t);
+  const text = '日本語 😀\r\nsecond line\n';
+  const writeUTF16 = async (name, encoding, bom) => {
+    const bytes = Buffer.from(text, 'utf16le');
+    if (encoding === 'utf-16be') {
+      for (let i = 0; i < bytes.length; i += 2) [bytes[i], bytes[i + 1]] = [bytes[i + 1], bytes[i]];
+    }
+    await fs.writeFile(path.join(root, name), Buffer.concat([bom, bytes]));
+  };
+  await writeUTF16('le.txt', 'utf-16le', Buffer.from([0xff, 0xfe]));
+  await writeUTF16('be.txt', 'utf-16be', Buffer.from([0xfe, 0xff]));
+  for (const [name, encoding] of [['le.txt', 'utf-16le'], ['be.txt', 'utf-16be']]) {
+    const { meta, body } = parse(await kit.read(name));
+    assert.equal(meta.source_encoding, encoding);
+    assert.equal(body, `\ufeff${text}`);
+    assert.equal(meta.sha256, sha256ForTest(`\ufeff${text}`));
+  }
+  const le = parse(await kit.read('le.txt'));
+  const retrieved = parse(await kit.retrieve({ snapshot_id: le.meta.snapshot_id, expected_sha256: le.meta.sha256 }));
+  assert.equal(retrieved.meta.current_source_status, 'same');
+  await fs.writeFile(path.join(root, 'truncated.txt'), Buffer.from([0xff, 0xfe, 0x41]));
+  await assert.rejects(() => kit.read('truncated.txt'), error => error.code === 'UNSUPPORTED_ENCODING');
 });
 test('secret filename patterns are blocked without blocking ordinary names', async t => {
   const { kit, write } = await fixture(t);

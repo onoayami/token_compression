@@ -9,7 +9,7 @@ const SAFE_MESSAGES = Object.freeze({
   BLOCKED: 'Path blocked by policy',
   TOO_LARGE: 'Input exceeds configured size limit',
   INVALID_ARGUMENT: 'Invalid argument',
-  UNSUPPORTED_ENCODING: 'Input is not valid UTF-8. Convert it to UTF-8 and retry.',
+  UNSUPPORTED_ENCODING: 'Input encoding is unsupported. Use UTF-8 or UTF-16 with a BOM and retry.',
   SOURCE_CHANGED: 'The file changed while it was being read. Copy it to a temporary file and retry.',
   CONTEXT_KIT_ERROR: 'Operation failed',
 });
