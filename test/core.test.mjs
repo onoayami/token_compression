@@ -196,9 +196,15 @@ test('BOM UTF-16LE and UTF-16BE preserve text, encoding metadata and decoded has
 test('secret filename patterns are blocked without blocking ordinary names', async t => {
   const { kit, write } = await fixture(t);
   for (const filename of ['id_dsa', 'state.tfstate', 'state.tfstate.backup', 'application_default_credentials.json',
-    'service-account-prod.json', 'client_secret_app.json', 'my-adminsdk-prod.json']) {
+    '.git-credentials', '.git-credentials.txt', 'token.json', 'service-account-prod.json',
+    'service_account-prod.json', 'client_secret_app.json', 'client-secret-app.json', 'my-adminsdk-prod.json']) {
     await write(filename, 'secret');
     await assert.rejects(() => kit.read(filename), error => error.code === 'BLOCKED');
+  }
+  for (const directory of ['.docker', '.kube', '.terraform', '.gcloud']) {
+    await fs.mkdir(path.join(kit.root, directory));
+    await fs.writeFile(path.join(kit.root, directory, 'config.json'), 'secret');
+    await assert.rejects(() => kit.read(`${directory}/config.json`), error => error.code === 'BLOCKED');
   }
   await write('tokenizer.txt', 'safe'); await write('secretary.md', 'safe');
   await kit.read('tokenizer.txt'); await kit.read('secretary.md');

@@ -23,7 +23,8 @@ const CACHE = '.context-kit-cache';
 const ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const HASH = /^[0-9a-f]{64}$/i;
 const EXTENSIONS = new Set(['.log', '.out', '.err', '.json', '.txt', '.md', '.jsonl', '.ndjson']);
-const BLOCKED_DIRS = new Set(['.git', '.ssh', '.aws', '.azure', '.gnupg', 'node_modules', CACHE]);
+const BLOCKED_DIRS = new Set(['.git', '.ssh', '.aws', '.azure', '.gnupg', '.docker', '.kube',
+  '.terraform', '.gcloud', 'node_modules', CACHE]);
 const CACHE_LSTAT_CONCURRENCY = 16;
 const PROTECTED = ['error', 'fatal', 'fail', 'exception', 'traceback', 'warning', 'warn',
   'panic', 'assert', 'denied', 'timeout', 'timed out', 'not ok', 'mismatch', 'critical',
@@ -222,10 +223,10 @@ export class ContextKit {
     if (segments.some(s => BLOCKED_DIRS.has(s))) throw new PublicError('BLOCKED', 'Blocked directory');
     const name = (segments.at(-1) || '').toLowerCase();
     if (/^\.env(?:\.|$)/.test(name) || ['.npmrc', '.pypirc', '.netrc', 'credentials', 'credentials.json',
-      'id_rsa', 'id_ed25519', 'id_ecdsa', 'id_dsa', 'application_default_credentials.json'].includes(name) ||
-      ['.docker', '.kube', '.terraform', '.gcloud'].includes(name) ||
-      /^service-account[^/]*\.json$/.test(name) || /^[^/]*-adminsdk-[^/]*\.json$/.test(name) ||
-      /^client_secret[^/]*\.json$/.test(name) || /\.(?:tfstate|tfstate\..+)$/.test(name) ||
+      '.git-credentials', '.git-credentials.txt', 'token.json', 'id_rsa', 'id_ed25519', 'id_ecdsa',
+      'id_dsa', 'application_default_credentials.json'].includes(name) ||
+      /^service[-_]account[^/]*\.json$/.test(name) || /^[^/]*-adminsdk-[^/]*\.json$/.test(name) ||
+      /^client[-_]secret[^/]*\.json$/.test(name) || /\.(?:tfstate|tfstate\..+)$/.test(name) ||
       /\.(?:pem|key|p12|pfx|der)$/.test(name) ||
       /^secrets?(?:\.|$)/.test(name)) throw new PublicError('BLOCKED', 'Potential credential file is blocked');
     const normalized = segments.join('/');
