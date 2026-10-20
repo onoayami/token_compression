@@ -306,11 +306,12 @@ test('cache file metadata lookup is bounded to sixteen concurrent lstat calls', 
   const original = kit.lstat; let active = 0, maximum = 0, calls = 0;
   kit.lstat = async filename => {
     active++; maximum = Math.max(maximum, active); calls++;
-    await new Promise(resolve => setImmediate(resolve));
+    await new Promise(resolve => setTimeout(resolve, 1));
     try { return await original(filename); } finally { active--; }
   };
   const files = await kit.cacheFiles();
-  assert.equal(files.length, 1000); assert.equal(calls, 1000); assert.ok(maximum <= 16);
+  assert.equal(files.length, 1000); assert.equal(calls, 1000);
+  assert.ok(maximum > 1); assert.equal(maximum, 16);
 });
 test('independent processes can read the same root without corrupting snapshots or metrics', async t => {
   const { root, kit, write } = await fixture(t);
