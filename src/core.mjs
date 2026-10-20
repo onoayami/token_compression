@@ -17,6 +17,7 @@ export const DEFAULTS = Object.freeze({
 });
 const CACHE = '.context-kit-cache';
 const ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const HASH = /^[0-9a-f]{64}$/i;
 const EXTENSIONS = new Set(['.log', '.out', '.err', '.json', '.txt', '.md', '.jsonl', '.ndjson']);
 const BLOCKED_DIRS = new Set(['.git', '.ssh', '.aws', '.azure', '.gnupg', 'node_modules', CACHE]);
 const PROTECTED = ['error', 'fatal', 'fail', 'exception', 'traceback', 'warning', 'warn',
@@ -239,6 +240,31 @@ export class ContextKit {
     const info = await fs.lstat(this.cache);
     if (info.isSymbolicLink() || !info.isDirectory()) throw new Error('Cache must be a non-symlink directory');
   }
+  async withCacheLock(fn) {
+    await this.ensureCache();
+    const lockfile = path.join(this.cache, '.lock');
+    let handle;
+    for (let attempt = 0; attempt < 200; attempt++) {
+      try {
+        handle = await fs.open(lockfile, 'wx', 0o600);
+        await handle.writeFile(`${Date.now()}\n`);
+        break;
+      } catch (error) {
+        if (error.code !== 'EEXIST') throw error;
+        try {
+          const info = await fs.stat(lockfile);
+          if (Date.now() - info.mtimeMs > 30000) await fs.unlink(lockfile);
+        } catch (staleError) { if (staleError.code !== 'ENOENT') throw staleError; }
+        await new Promise(resolve => setTimeout(resolve, 10));
+      }
+    }
+    if (!handle) throw new Error('Cache is busy; retry later');
+    try { return await fn(); }
+    finally {
+      await handle.close();
+      try { await fs.unlink(lockfile); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    }
+  }
   async cacheFiles() {
     await this.ensureCache();
     const files = [];
@@ -256,18 +282,33 @@ export class ContextKit {
     const expiresBefore = Date.now() - this.config.cacheTTLHours * 3600000;
     for (const f of files) {
       if (f.time < expiresBefore || total + required > this.config.maxCacheBytes) {
-        await fs.unlink(f.filename); total -= f.size;
+        try { await fs.unlink(f.filename); total -= f.size; } catch (error) { if (error.code !== 'ENOENT') throw error; }
       }
     }
     if (total + required > this.config.maxCacheBytes) throw new Error('Snapshot exceeds cache budget');
   }
   async save(text, relative) {
-    const data = { version: 1, id: randomUUID(), source: relative.replaceAll(path.sep, '/'),
-      createdAt: new Date().toISOString(), sha256: sha256(text), text };
-    const serialized = JSON.stringify(data);
-    await this.prune(bytes(serialized));
-    await fs.writeFile(path.join(this.cache, `${data.id}.json`), serialized, { flag: 'wx', mode: 0o600 });
-    return data;
+    return this.withCacheLock(async () => {
+      const normalized = relative.replaceAll(path.sep, '/'), digest = sha256(text);
+      for (const file of await this.cacheFiles()) {
+        const id = path.basename(file.filename, '.json');
+        try {
+          const existing = await this.load(id);
+          if (existing.source === normalized && existing.sha256.toLowerCase() === digest &&
+              sha256(existing.text) === digest) return existing;
+        } catch { /* Expired, malformed, or tampered snapshots are not reusable. */ }
+      }
+      const data = { version: 1, id: randomUUID(), source: normalized,
+        createdAt: new Date().toISOString(), sha256: digest, text };
+      const serialized = JSON.stringify(data);
+      await this.prune(bytes(serialized));
+      const temporary = path.join(this.cache, `.${data.id}.${randomUUID()}.tmp`);
+      try {
+        await fs.writeFile(temporary, serialized, { flag: 'wx', mode: 0o600 });
+        await fs.rename(temporary, path.join(this.cache, `${data.id}.json`));
+      } finally { try { await fs.unlink(temporary); } catch (error) { if (error.code !== 'ENOENT') throw error; } }
+      return data;
+    });
   }
   async load(id) {
     if (typeof id !== 'string' || !ID.test(id)) throw new Error('Invalid snapshot ID');
@@ -275,21 +316,23 @@ export class ContextKit {
     const text = await limitedRead(path.join(this.cache, `${id}.json`), this.config.maxCacheBytes);
     const data = JSON.parse(text);
     if (data.version !== 1 || data.id !== id || typeof data.text !== 'string' ||
-        typeof data.source !== 'string' || sha256(data.text) !== data.sha256) throw new Error('Snapshot integrity check failed');
+        typeof data.source !== 'string' || typeof data.sha256 !== 'string' || !HASH.test(data.sha256))
+      throw new Error('Snapshot integrity check failed');
     const age = Date.now() - Date.parse(data.createdAt);
     if (!Number.isFinite(age) || age < -60000 || age > this.config.cacheTTLHours * 3600000) throw new Error('Snapshot expired or invalid; reacquire and recheck the source');
     return data;
   }
   async record(event) {
-    await this.ensureCache();
-    const filename = path.join(this.cache, 'metrics.jsonl');
-    let flag = 'a';
-    try {
-      const info = await fs.lstat(filename);
-      if (!info.isFile() || info.isSymbolicLink()) throw new Error('Invalid metrics file');
-      if (info.size > 1024 * 1024) flag = 'w'; // Recent metrics, not lifetime totals.
-    } catch (error) { if (error.code !== 'ENOENT') throw error; }
-    await fs.writeFile(filename, `${JSON.stringify({ at: new Date().toISOString(), ...event })}\n`, { flag, mode: 0o600 });
+    await this.withCacheLock(async () => {
+      const filename = path.join(this.cache, 'metrics.jsonl');
+      let flag = 'a';
+      try {
+        const info = await fs.lstat(filename);
+        if (!info.isFile() || info.isSymbolicLink()) throw new Error('Invalid metrics file');
+        if (info.size > 1024 * 1024) flag = 'w'; // Recent metrics, not lifetime totals.
+      } catch (error) { if (error.code !== 'ENOENT') throw error; }
+      await fs.writeFile(filename, `${JSON.stringify({ at: new Date().toISOString(), ...event })}\n`, { flag, mode: 0o600 });
+    });
   }
   async tryRecord(event) {
     try { await this.record(event); return { recorded: true }; }
@@ -334,7 +377,13 @@ export class ContextKit {
   }
   async retrieve({ snapshot_id, expected_sha256, start_line = 1, end_line, offset = 0, limit, quote } = {}) {
     const source = await this.load(snapshot_id);
-    if (expected_sha256 !== undefined && expected_sha256 !== source.sha256) throw new Error('Expected SHA-256 does not match snapshot');
+    let integrityStatus = 'self-reported-only';
+    if (expected_sha256 !== undefined) {
+      if (typeof expected_sha256 !== 'string' || !HASH.test(expected_sha256))
+        throw new Error('expected_sha256 must be a 64-character hexadecimal SHA-256');
+      if (expected_sha256.toLowerCase() !== sha256(source.text)) throw new Error('Expected SHA-256 does not match snapshot');
+      integrityStatus = 'matched-external-expected-hash';
+    }
     const lines = lineParts(source.text);
     integer(start_line, 'start_line', 1, lines.length);
     end_line ??= Math.min(lines.length, start_line + 29);
@@ -367,6 +416,7 @@ export class ContextKit {
       character_offset_in_selected_lines: offset,
       next_offset: offset + chars(body).length < points.length ? offset + chars(body).length : null,
       page_complete: offset === 0 && chars(body).length === points.length,
+      integrity_status: integrityStatus,
       current_source_status: currentSourceStatus,
       ...(currentSourceStatus === 'unavailable' ? { current_source_reason: currentSourceReason } : {}),
       ...(quote !== undefined ? { quote_match_in_requested_lines: selected.includes(quote) } : {}),
@@ -441,21 +491,25 @@ export class ContextKit {
     };
   }
   async purge() {
-    const entries = await this.cacheFiles();
-    for (const f of entries) await fs.unlink(f.filename);
-    const filename = path.join(this.cache, 'metrics.jsonl');
-    try {
-      const info = await fs.lstat(filename);
-      if (!info.isFile() || info.isSymbolicLink()) throw new Error('Invalid metrics file');
-      await fs.unlink(filename);
-    } catch (error) { if (error.code !== 'ENOENT') throw error; }
-    const ledgerFile = path.join(this.cache, 'context-reads.json');
-    let deletedContextLedger = false;
-    try {
-      const info = await fs.lstat(ledgerFile);
-      if (!info.isFile() || info.isSymbolicLink()) throw new Error('Invalid context output ledger');
-      await fs.unlink(ledgerFile); deletedContextLedger = true;
-    } catch (e) { if (e.code !== 'ENOENT') throw e; }
-    return { deleted_snapshots: entries.length, deleted_context_output_ledger: deletedContextLedger, note: 'Source files, registered Markdown documents and handoff notes were not deleted.' };
+    return this.withCacheLock(async () => {
+      const entries = await this.cacheFiles();
+      for (const f of entries) {
+        try { await fs.unlink(f.filename); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+      }
+      const filename = path.join(this.cache, 'metrics.jsonl');
+      try {
+        const info = await fs.lstat(filename);
+        if (!info.isFile() || info.isSymbolicLink()) throw new Error('Invalid metrics file');
+        await fs.unlink(filename);
+      } catch (error) { if (error.code !== 'ENOENT') throw error; }
+      const ledgerFile = path.join(this.cache, 'context-reads.json');
+      let deletedContextLedger = false;
+      try {
+        const info = await fs.lstat(ledgerFile);
+        if (!info.isFile() || info.isSymbolicLink()) throw new Error('Invalid context output ledger');
+        await fs.unlink(ledgerFile); deletedContextLedger = true;
+      } catch (e) { if (e.code !== 'ENOENT') throw e; }
+      return { deleted_snapshots: entries.length, deleted_context_output_ledger: deletedContextLedger, note: 'Source files, registered Markdown documents and handoff notes were not deleted.' };
+    });
   }
 }

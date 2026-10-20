@@ -74,6 +74,7 @@ node src/cli.mjs context --format text
 ```
 
 `<snapshot_id>` は説明用の置き場所です。山括弧ごと入力せず、実際のIDへ置き換えてください。
+保存ファイル内のSHA-256は偶発的な破損検出に使う自己申告値です。改ざん対策には `kit_read` が返したSHA-256を呼び出し側で保持し、`kit_source` の `expected_sha256`（CLIでは `--sha256`）へ指定してください。照合できた場合は `integrity_status` が `matched-external-expected-hash`、指定しない場合は `self-reported-only` です。
 不要になったデモの保存版を削除するには、同じルートを指定して `node src/cli.mjs purge` を使います。元ファイルは消えません。
 
 ## CLI方式でVS Code / Copilot へ接続する

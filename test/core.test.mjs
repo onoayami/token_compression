@@ -155,12 +155,15 @@ test('invalid IDs, reversed ranges and expired snapshots fail explicitly', async
   data.createdAt = '2000-01-01T00:00:00.000Z'; await fs.writeFile(file, JSON.stringify(data));
   await assert.rejects(() => kit.retrieve({ snapshot_id: meta.snapshot_id }), /expired/);
 });
-test('tampered snapshot contents fail the hash check', async t => {
+test('external hash checking detects a tampered snapshot while omission is self-reported only', async t => {
   const { kit, root, write } = await fixture(t); await write('a.txt', 'a');
   const { meta } = parse(await kit.read('a.txt'));
   const file = path.join(root, '.context-kit-cache', `${meta.snapshot_id}.json`), data = JSON.parse(await fs.readFile(file, 'utf8'));
-  data.text = 'tampered'; await fs.writeFile(file, JSON.stringify(data));
-  await assert.rejects(() => kit.retrieve({ snapshot_id: meta.snapshot_id }), /integrity/);
+  data.text = 'tampered'; data.sha256 = '0'.repeat(64); await fs.writeFile(file, JSON.stringify(data));
+  const selfReported = parse(await kit.retrieve({ snapshot_id: meta.snapshot_id }));
+  assert.equal(selfReported.meta.integrity_status, 'self-reported-only');
+  await assert.rejects(() => kit.retrieve({ snapshot_id: meta.snapshot_id, expected_sha256: meta.sha256 }), /SHA-256/);
+  await assert.rejects(() => kit.retrieve({ snapshot_id: meta.snapshot_id, expected_sha256: 'invalid' }), /64-character/);
 });
 test('metrics include returned metadata/retrieval and can show net overhead', async t => {
   const { kit, write } = await fixture(t); await write('a.txt', 'short');
@@ -191,4 +194,15 @@ test('cache budget evicts older snapshots and purge never deletes originals', as
   const files = await kit.cacheFiles(); assert.ok(files.reduce((n, x) => n + x.size, 0) <= 8192);
   const purged = await kit.purge(); assert.ok(purged.deleted_snapshots > 0);
   assert.equal((await fs.readFile(path.join(root, 'a.txt'), 'utf8')).length, 1000);
+});
+test('identical reads reuse an unexpired intact snapshot', async t => {
+  const { kit, root, write } = await fixture(t);
+  await write('a.txt', 'same content');
+  const first = parse(await kit.read('a.txt'));
+  const second = parse(await kit.read('a.txt'));
+  assert.equal(second.meta.snapshot_id, first.meta.snapshot_id);
+  assert.equal((await kit.cacheFiles()).length, 1);
+  await write('a.txt', 'changed content');
+  const third = parse(await kit.read('a.txt'));
+  assert.notEqual(third.meta.snapshot_id, first.meta.snapshot_id);
 });
