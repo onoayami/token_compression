@@ -2,10 +2,13 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs, openKit } from './options.mjs';
 import { formatStats } from './report.mjs';
+import { formatContextOverview } from './context.mjs';
 const help = `Copilot Context Kit (Node.js 20+, no npm install needed)
   node src/cli.mjs read FILE [--mode safe|preview] [--root WORKSPACE]
   node src/cli.mjs source SNAPSHOT_ID [--start-line N --end-line N --offset N --limit N --sha256 HASH --quote TEXT]
   node src/cli.mjs stats [--format text|json] [--root WORKSPACE]
+  node src/cli.mjs context [--format text|json] [--offset N --limit N] [--root WORKSPACE]
+  node src/cli.mjs context-read DOCUMENT_ID [--root WORKSPACE]
   node src/cli.mjs purge [--root WORKSPACE]
   node src/cli.mjs config [--root WORKSPACE] [--format vscode|portable]
 Optional: --config /absolute/path/to/config.json
@@ -34,6 +37,14 @@ try {
         ...(o.limit !== undefined ? { limit: Number(o.limit) } : {}),
         ...(o.sha256 !== undefined ? { expected_sha256: o.sha256 } : {}),
         ...(o.quote !== undefined ? { quote: o.quote } : {}) }));
+      else if (command === 'context-read' && p.length === 1) console.log(await kit.context({ action: 'read', id: p[0] }));
+      else if (command === 'context' && !p.length) {
+        if (o.format && !['text', 'json'].includes(o.format)) throw new Error('context format must be text or json');
+        const text = await kit.context({ action: 'list',
+          ...(o.offset !== undefined ? { offset: Number(o.offset) } : {}),
+          ...(o.limit !== undefined ? { limit: Number(o.limit) } : {}) });
+        console.log(o.format === 'json' ? text : formatContextOverview(JSON.parse(text)));
+      }
       else if (command === 'stats' && !p.length) {
         if (o.format && !['text', 'json'].includes(o.format)) throw new Error('stats format must be text or json');
         const stats = await kit.stats();

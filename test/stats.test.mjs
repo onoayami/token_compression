@@ -98,13 +98,13 @@ test('CLI supports readable text and JSON statistics and rejects unsupported for
   assert.equal(JSON.parse(json.stdout).read_calls, 0);
   await assert.rejects(() => run(process.execPath, [cli, 'stats', '--root', root, '--format', 'html']), /stats format/);
 });
-test('trial configuration and all four slash prompts are included without auto-approval', async () => {
+test('trial configuration and all six slash prompts are included without auto-approval', async () => {
   const root = fileURLToPath(new URL('..', import.meta.url));
   const config = JSON.parse(await fs.readFile(path.join(root, '.vscode', 'mcp.json'), 'utf8'));
   assert.equal(config.servers['context-kit'].command, 'node');
   assert.equal(config.servers['context-kit'].args[0], '${workspaceFolder}/src/server.mjs');
   assert.ok(!JSON.stringify(config).toLowerCase().includes('autoapprove'));
   const names = (await fs.readdir(path.join(root, 'integration', 'prompts'))).filter(n => n.endsWith('.prompt.md'));
-  assert.equal(names.length, 4);
+  assert.equal(names.length, 6);
   for (const name of names) assert.equal(await fs.readFile(path.join(root, '.github', 'prompts', name), 'utf8'), await fs.readFile(path.join(root, 'integration', 'prompts', name), 'utf8'));
 });

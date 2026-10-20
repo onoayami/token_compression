@@ -3,8 +3,9 @@
 ## 実装の地図
 
 ```text
+src/context.mjs    Markdown登録台帳・版・適用範囲・本文出力記録
 src/core.mjs       圧縮・安全な入口・保存版・原文範囲取得・簡易統計
-src/server.mjs     小さな stdio MCP サーバー（3ツール）
+src/server.mjs     小さな stdio MCP サーバー（4ツール）
 src/report.mjs     圧縮状況を日本語テキストに整形
 src/cli.mjs        単体動作・設定の表示・統計・保存版削除
 src/options.mjs    起動引数・任意設定ファイル
@@ -57,3 +58,12 @@ node src/cli.mjs config --root "/absolute/path/to/project" --config "/absolute/p
 
 Copilot の認証情報の読み取り、通信先の強制変更、非公開APIへの依存、全コマンドの自動実行、無断の全ファイル走査。
 まず公式 MCP と手動の引き継ぎフローで対象の入口が使われているか確認してください。
+
+
+## 共通知識の拡張
+
+`project-context/catalog.json` が入口です。資料本文はMarkdownのままで、既存ファイルの相対パスも登録できます。
+一覧取得は本文を返さず、明示的に選んだIDだけ読みます。プロンプトだけでなくプログラム側でも登録・部分出力・全体出力・変更後の再確認を区別します。
+`src/context.mjs` の出力記録は同じ原文ハッシュ・同じ台帳条件でのみ範囲を合算します。
+
+意味的な矛盾検出や、タスクを自動判定して読む資料を選ぶ参照セットは未実装です。初期版の範囲を広げる場合も、台帳の正式性を自動で書き換えないでください。

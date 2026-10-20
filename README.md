@@ -6,7 +6,7 @@ VS Code の GitHub Copilot を想定した小さなスターターです。Headr
 ## インストールだけで使える？
 
 **VS Codeの拡張機能ストアから入れる完成品ではなく、初回設定が必要な試作版です。**
-ただし、このリポジトリ自体を開いて試すための接続設定と4つのプロンプトは同梱しています。
+ただし、このリポジトリ自体を開いて試すための接続設定と6つのプロンプトは同梱しています。
 
 1. Node.js 20以上をインストール（入っていれば不要）。VS CodeとGitHub Copilotを利用できる状態にする。
 2. GitHubの「Code → Download ZIP」で取得・展開し、`package.json` と `README.md` があるフォルダをVS Codeで開く。
@@ -24,6 +24,8 @@ VS Code の GitHub Copilot を想定した小さなスターターです。Headr
 | 引き継ぎ用プロンプト | Copilot が現在の会話から、確定事項・未解決事項・根拠付きのメモを作る |
 | 再開用プロンプト | 利用者が開いた新しいチャットで、メモと必要な原文だけを読む |
 | ローカル MCP | ログの重複・JSONの余分な空白を整理してから Copilot に渡す |
+| 共通知識の棚 | Markdownの用語集・要件・設計書・判断理由・未確認事項を登録し、必要な資料だけ選んで読む |
+| 資料の状態管理 | 正式／検討中／過去版、版・範囲、本文出力記録、変更後の再確認を区別 |
 | 圧縮状況レポート | 圧縮前後のサイズ・削減率・説明や原文再取得を含めた参考差を表示 |
 | 原文保存・照合 | 保存版ID、SHA-256、原文行範囲、引用一致、現在のファイルからの変更を確認する |
 
@@ -44,7 +46,7 @@ ZIPを展開し、`package.json` のあるフォルダを VS Code で開いて�
 
 ```sh
 node --version
-node --test test/core.test.mjs test/server.test.mjs test/cli.test.mjs test/stats.test.mjs
+node --test test/core.test.mjs test/server.test.mjs test/cli.test.mjs test/stats.test.mjs test/context.test.mjs
 node src/cli.mjs read examples/sample.log
 ```
 
@@ -54,6 +56,7 @@ node src/cli.mjs read examples/sample.log
 ```sh
 node src/cli.mjs source <snapshot_id> --start-line 1 --end-line 8
 node src/cli.mjs stats
+node src/cli.mjs context --format text
 ```
 
 `<snapshot_id>` は説明用の置き場所です。山括弧ごと入力せず、実際のIDへ置き換えてください。
@@ -90,13 +93,15 @@ node src/cli.mjs config --root "/absolute/path/to/project" --format portable
 
 ### 3. 引き継ぎ用プロンプトを配置
 
-`integration/prompts/` の4ファイルを、開発プロジェクトの `.github/prompts/` にコピーします。
+`integration/prompts/` の6ファイルを、開発プロジェクトの `.github/prompts/` にコピーします。
 既存の同名ファイルがあれば比較してから追加してください。対応する VS Code のチャットで次が使えます。
 
 - `/context-handoff-save`：現在の会話から引き継ぎメモを作る
 - `/context-handoff-resume`：新しいチャットで再開する
 - `/context-read`：今回指定した資料を整理して読む
 - `/context-stats`：圧縮前後のサイズ・削減率・追加分を確認する
+- `/context-overview`：共通知識の登録・状態・出力記録を一覧で見る
+- `/context-question-propose`：未確認事項・矛盾を記録する案を作る（承認前は書き込まない）
 
 プロンプトファイルが使えないエージェント／版では、ファイルの YAML ヘッダーを除いた本文をチャットへ貼って実行できます。自動で毎回適用するものではありません。
 
@@ -130,6 +135,35 @@ context-kit の kit_read を使い、examples/requirements.md を safe で読ん
 ```
 
 これはGitへの混入防止であり、暗号化・バックアップ停止・クラウド同期の停止ではありません。
+
+## 用語集や設計書をセットする
+
+`project-context/` に入力用テンプレートと登録台帳を追加しました。最初はすべて「検討中・未設定」です。
+
+```text
+project-context/
+  catalog.json          場所・正式性・版・適用範囲
+  overview.md           プロジェクト概要
+  glossary.md           用語集
+  requirements.md       要件・完了条件
+  design/overview.md    設計書の入口
+  decisions.md          決定と理由
+  questions.md          未確認事項・矛盾
+```
+
+別の開発プロジェクトへ組み込む場合は、`project-context/` をそのプロジェクトの直下へ配置してください。すでに台帳や資料がある場合は上書きせず比較・統合します。キットを `tools/` 配下へ置いただけでは、プロジェクト直下の台帳は作られません。
+
+既存のMarkdown設計書は、コピーを増やさず catalog.json にワークスペース内の場所を登録できます。
+`/context-overview` または「kit_contextで一覧を見せて」と依頼して登録状況だけ確認し、必要な資料をidで選びます。
+
+```text
+kit_contextで action=read、id=glossary を指定し、用語集だけ読んでください。
+```
+
+登録のみ・場所のみ返却・本文の一部／全体の出力記録・要再確認を分けます。内容または台帳の版や範囲の変更、根拠切れは再確認として表示します。
+**一覧を見ただけでは本文を出力済みにしません。「出力記録あり」はAIの理解・内容の正しさ・人の承認の保証でもありません。**
+要件・設計を正式扱いするかは利用者が決め、矛盾は勝手に解決せず questions.md へ確認案を残します。
+詳しい登録方法と注意点は [共通知識の棚のガイド](docs/PROJECT-CONTEXT.md) を参照してください。
 
 ## 「根拠へ戻れる」仕組み
 
@@ -168,7 +202,7 @@ node src/cli.mjs stats --format text
 別の開発プロジェクトを対象にした場合は、同じ `--root` を指定してください。
 
 - **資料そのもの**：圧縮前後の文字数・UTF-8バイト数・削減率。
-- **追加分込みの参考比較**：説明情報と原文の再取得も含め、元資料全文と比べたバイト差。
+- **追加分込みの参考比較**：説明情報・原文の再取得・共通知識一覧の返却分も含め、元資料全文と比べたバイト差。
 - **確認範囲**：previewの回数、本文未表示・ページ取得、集約した繰り返し行数。
 - **未計測**：Copilot全体の実トークン数・料金・会話の要約に使った消費・正確さ。
 
@@ -184,6 +218,7 @@ node src/cli.mjs stats --format text
 
 ## 追加資料
 
+- [共通知識の棚の使い方](docs/PROJECT-CONTEXT.md)
 - [友人向け：改造ポイント](docs/CUSTOMIZE.md)
 - [安全性と限界](docs/SECURITY.md)
 - [検証の範囲](docs/VERIFICATION.md)

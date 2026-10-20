@@ -19,7 +19,7 @@ test('MCP initialization, tool listing, ping and notification behavior', async t
   const { handle } = await setup(t);
   assert.equal((await handle(rpc(0, 'tools/list'))).error.code, -32000);
   assert.equal((await initialize(handle)).result.protocolVersion, '2025-06-18');
-  assert.equal((await handle(rpc(2, 'tools/list'))).result.tools.length, 3);
+  assert.equal((await handle(rpc(2, 'tools/list'))).result.tools.length, 4);
   assert.equal(await handle({ jsonrpc: '2.0', method: 'notifications/initialized' }), null);
   assert.deepEqual((await handle(rpc(3, 'ping'))).result, {});
 });
@@ -41,8 +41,8 @@ test('MCP unknown methods, tools, parameters and invalid types are rejected', as
   assert.equal((await handle(rpc(6, 'tools/call', { name: 'kit_read', arguments: { path: 'spec.txt', mode: null } }))).error.code, -32602);
   assert.equal((await handle({ id: 1, method: 'ping' })).error.code, -32600);
 });
-test('tool schemas explicitly describe side effects and only three tools are exposed', () => {
-  assert.equal(TOOLS.length, 3);
+test('tool schemas explicitly describe side effects and only four tools are exposed', () => {
+  assert.equal(TOOLS.length, 4);
   for (const tool of TOOLS) { assert.equal(tool.annotations.destructiveHint, false); assert.equal(tool.inputSchema.additionalProperties, false); }
 });
 test('real stdio process speaks newline-delimited JSON-RPC with clean stdout', async t => {

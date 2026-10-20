@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
+import { ContextRegistry } from './context.mjs';
 
 export const DEFAULTS = Object.freeze({
   maxInputBytes: 2 * 1024 * 1024,
@@ -185,6 +186,34 @@ export class ContextKit {
     this.checkRelative(path.relative(this.root, actual));
     return actual;
   }
+  async localText(requested, limit = this.config.maxInputBytes) {
+    const filename = await this.sourcePath(requested);
+    return { filename, text: await limitedRead(filename, Math.min(limit, this.config.maxInputBytes)) };
+  }
+  async context(options = {}) {
+    const { action = 'list', id, offset = 0, limit = 10 } = options;
+    const registry = new ContextRegistry(this);
+    if (action === 'read') {
+      if (Object.hasOwn(options, 'offset') || Object.hasOwn(options, 'limit')) throw new Error('Context read does not accept list pagination');
+      if (typeof id !== 'string' || !id) throw new Error('Context read requires a document id');
+      return registry.readById(id);
+    }
+    if (action !== 'list' || id !== undefined) throw new Error('Context list does not accept an id');
+    const output = JSON.stringify(await registry.overview({ offset, limit }));
+    await this.record({ type: 'context', responseBytes: bytes(output) });
+    return output;
+  }
+  async contextRegistration(sourceRelative) {
+    try { return { doc: await new ContextRegistry(this).registration(sourceRelative) }; }
+    catch (e) { return { doc: null, warning: `Context registration unavailable: ${e.message}` }; }
+  }
+  async trackContextOutput(source, registration, range) {
+    if (!registration.doc) return registration.warning ? { context_registration_warning: registration.warning } : {};
+    try {
+      await new ContextRegistry(this).noteOutput(source, registration.doc, range);
+      return { context_output_tracking: 'recorded' };
+    } catch (e) { return { context_output_tracking: 'failed', context_tracking_warning: e.message }; }
+  }
   async ensureCache() {
     try { await fs.mkdir(this.cache, { mode: 0o700 }); }
     catch (error) { if (error.code !== 'EEXIST') throw error; }
@@ -248,13 +277,17 @@ export class ContextKit {
     const filename = await this.sourcePath(requested);
     const text = await limitedRead(filename, this.config.maxInputBytes);
     const source = await this.save(text, path.relative(this.root, filename));
+    const registration = await this.contextRegistration(source.source);
     const ext = path.extname(filename).toLowerCase();
     const kind = ext === '.json' ? 'json' : ['.log', '.out', '.err'].includes(ext) ? 'log' : 'text';
     const result = compact(text, kind, mode, this.config);
     const bodyComplete = chars(result.body).length <= this.config.maxOutputChars;
     const body = bodyComplete ? result.body : '';
+    const tracking = await this.trackContextOutput(source, registration, { start: 0, end: bodyComplete ? chars(text).length : 0, hasBody: bodyComplete && kind === 'text' && !result.lossy });
     const meta = { snapshot_id: source.id, sha256: source.sha256, file: source.source,
-      captured_at: source.createdAt, original_lines: lineParts(text).length,
+      captured_at: source.createdAt,
+      ...(registration.doc ? { context_document: new ContextRegistry(this).publicDocument(registration.doc) } : {}),
+      ...tracking, original_lines: lineParts(text).length,
       original_bytes: bytes(text), original_characters: chars(text).length,
       compacted_content_bytes: bytes(result.body), compacted_content_characters: chars(result.body).length,
       content_byte_reduction_percent: bytes(text) ? Math.round((1 - bytes(result.body) / bytes(text)) * 10000) / 100 : null,
@@ -286,13 +319,18 @@ export class ContextKit {
     integer(offset, 'offset', 0, points.length);
     if (quote !== undefined && (typeof quote !== 'string' || !quote || chars(quote).length > 1000)) throw new Error('quote must contain 1..1000 characters');
     const body = points.slice(offset, offset + limit).join('');
+    const registration = await this.contextRegistration(source.source);
+    const sourceOffset = chars(lines.slice(0, start_line - 1).join('')).length + offset;
+    const tracking = await this.trackContextOutput(source, registration, { start: sourceOffset, end: sourceOffset + chars(body).length, hasBody: true });
     let currentSourceStatus = 'unavailable';
     try {
       const current = await limitedRead(await this.sourcePath(source.source), this.config.maxInputBytes);
       currentSourceStatus = sha256(current) === source.sha256 ? 'same' : 'changed';
     } catch { /* A missing or now-blocked source is not evidence for the summary. */ }
     const meta = { snapshot_id: source.id, sha256: source.sha256, file: source.source,
-      captured_at: source.createdAt, original_lines: lines.length, start_line, end_line,
+      captured_at: source.createdAt,
+      ...(registration.doc ? { context_document: new ContextRegistry(this).publicDocument(registration.doc) } : {}),
+      ...tracking, original_lines: lines.length, start_line, end_line,
       character_offset_in_selected_lines: offset,
       next_offset: offset + chars(body).length < points.length ? offset + chars(body).length : null,
       page_complete: offset === 0 && chars(body).length === points.length,
@@ -310,15 +348,17 @@ export class ContextKit {
     catch (error) { if (error.code !== 'ENOENT') throw error; }
     const reads = events.filter(e => e.type === 'read');
     const retrievals = events.filter(e => e.type === 'retrieve');
+    const contextEvents = events.filter(e => e.type === 'context');
     const measured = reads.filter(e => Number.isFinite(e.compactBytes) && Number.isFinite(e.compactChars) && Number.isFinite(e.inputChars));
     const sum = (items, key) => items.reduce((n, e) => n + (e[key] || 0), 0);
     const percent = (before, after) => before > 0 ? Math.round((1 - after / before) * 10000) / 100 : null;
     const originalBytes = sum(reads, 'inputBytes'), readBytes = sum(reads, 'responseBytes'), retrieveBytes = sum(retrievals, 'responseBytes');
+    const contextBytes = sum(contextEvents, 'responseBytes');
     const before = sum(measured, 'inputBytes'), after = sum(measured, 'compactBytes');
     const beforeChars = sum(measured, 'inputChars'), afterChars = sum(measured, 'compactChars');
     return {
       scope: 'recent_local_file_reads_only',
-      read_calls: reads.length, retrieve_calls: retrievals.length,
+      read_calls: reads.length, retrieve_calls: retrievals.length, context_index_calls: contextEvents.length,
       content: {
         measured_read_calls: measured.length, legacy_unmeasured_read_calls: reads.length - measured.length,
         original_bytes: before, compacted_bytes: after, reduction_bytes: before - after,
@@ -332,10 +372,11 @@ export class ContextKit {
         original_bytes_on_read: originalBytes,
         read_response_bytes_including_metadata: readBytes,
         retrieval_response_bytes_including_metadata: retrieveBytes,
-        total_response_bytes: readBytes + retrieveBytes,
-        reference_byte_delta_vs_original_full_text: originalBytes - readBytes - retrieveBytes,
-        reference_reduction_percent_vs_original_full_text: percent(originalBytes, readBytes + retrieveBytes),
-        note: 'Reference comparison against original full text, not measured savings in Copilot. Includes returned metadata and source lookup text; excludes tool schemas, prompts, stats calls, protocol envelopes and repeated model context use.'
+        context_index_response_bytes: contextBytes,
+        total_response_bytes: readBytes + retrieveBytes + contextBytes,
+        reference_byte_delta_vs_original_full_text: originalBytes - readBytes - retrieveBytes - contextBytes,
+        reference_reduction_percent_vs_original_full_text: percent(originalBytes, readBytes + retrieveBytes + contextBytes),
+        note: 'Reference comparison against original full text, not measured savings in Copilot. Includes returned metadata, context index and source lookup text; excludes tool schemas, prompts, stats calls, protocol envelopes and repeated model context use.'
       },
       coverage: {
         lossy_preview_calls: reads.filter(e => e.lossy).length,
@@ -347,7 +388,7 @@ export class ContextKit {
       original_bytes_on_read: originalBytes,
       read_response_bytes_including_metadata: readBytes,
       retrieval_response_bytes_including_metadata: retrieveBytes,
-      byte_delta_after_retrieval: originalBytes - readBytes - retrieveBytes,
+      byte_delta_after_retrieval: originalBytes - readBytes - retrieveBytes - contextBytes,
       model_tokens: { status: 'not_measured', reduction_percent: null },
       copilot_billing: { status: 'not_measured', saved_amount: null },
       note: 'Recent UTF-8 bytes and Unicode character counts only. Negative reference deltas mean overhead exceeded reduction. Not measured model tokens, cost savings, context size or quality. History rotates around 1 MiB; purge resets it. Chat handoff/summary costs are not measured.'
@@ -362,6 +403,13 @@ export class ContextKit {
       if (!info.isFile() || info.isSymbolicLink()) throw new Error('Invalid metrics file');
       await fs.unlink(filename);
     } catch (error) { if (error.code !== 'ENOENT') throw error; }
-    return { deleted_snapshots: entries.length, note: 'Source files and handoff notes were not deleted.' };
+    const ledgerFile = path.join(this.cache, 'context-reads.json');
+    let deletedContextLedger = false;
+    try {
+      const info = await fs.lstat(ledgerFile);
+      if (!info.isFile() || info.isSymbolicLink()) throw new Error('Invalid context output ledger');
+      await fs.unlink(ledgerFile); deletedContextLedger = true;
+    } catch (e) { if (e.code !== 'ENOENT') throw e; }
+    return { deleted_snapshots: entries.length, deleted_context_output_ledger: deletedContextLedger, note: 'Source files, registered Markdown documents and handoff notes were not deleted.' };
   }
 }

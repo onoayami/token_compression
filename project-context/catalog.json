@@ -1,0 +1,59 @@
+{
+  "schemaVersion": 1,
+  "documents": [
+    {
+      "id": "overview",
+      "title": "プロジェクト概要",
+      "kind": "overview",
+      "path": "project-context/overview.md",
+      "status": "draft",
+      "version": "未設定",
+      "scope": "全体"
+    },
+    {
+      "id": "glossary",
+      "title": "用語集",
+      "kind": "glossary",
+      "path": "project-context/glossary.md",
+      "status": "draft",
+      "version": "未設定",
+      "scope": "全体"
+    },
+    {
+      "id": "requirements",
+      "title": "要件・完了条件",
+      "kind": "requirements",
+      "path": "project-context/requirements.md",
+      "status": "draft",
+      "version": "未設定",
+      "scope": "全体"
+    },
+    {
+      "id": "design",
+      "title": "設計書",
+      "kind": "design",
+      "path": "project-context/design/overview.md",
+      "status": "draft",
+      "version": "未設定",
+      "scope": "全体"
+    },
+    {
+      "id": "decisions",
+      "title": "決定事項と理由",
+      "kind": "decisions",
+      "path": "project-context/decisions.md",
+      "status": "draft",
+      "version": "未設定",
+      "scope": "全体"
+    },
+    {
+      "id": "questions",
+      "title": "未確認事項・矛盾",
+      "kind": "questions",
+      "path": "project-context/questions.md",
+      "status": "draft",
+      "version": "未設定",
+      "scope": "全体"
+    }
+  ]
+}

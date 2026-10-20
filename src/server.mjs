@@ -29,6 +29,16 @@ TOOLS.push({
   inputSchema: { type: 'object', additionalProperties: false, properties: {}, required: [] },
   annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
 });
+TOOLS.push({
+  name: 'kit_context',
+  description: 'List registered Markdown project documents with declared official/draft/archived status, version, scope, output records and change/recheck flags without sending bodies. Or explicitly read one document by id. Registration/output do not prove truth or AI understanding. Unknowns/conflicts stay unresolved.',
+  inputSchema: { type: 'object', additionalProperties: false, properties: {
+    action: { type: 'string', enum: ['list', 'read'], default: 'list' },
+    id: { type: 'string', minLength: 1, maxLength: 64 },
+    offset: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 20 },
+  }, required: [] },
+  annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+});
 const VERSIONS = ['2025-06-18', '2025-03-26', '2024-11-05'];
 const error = (id, code, message) => ({ jsonrpc: '2.0', id, error: { code, message } });
 export function createHandler(kit) {
@@ -45,7 +55,7 @@ export function createHandler(kit) {
     if (method === 'initialize') {
       initialized = true;
       return ok({ protocolVersion: VERSIONS.includes(params.protocolVersion) ? params.protocolVersion : VERSIONS[0],
-        capabilities: { tools: {} }, serverInfo: { name: 'copilot-context-kit', version: '0.2.0' } });
+        capabilities: { tools: {} }, serverInfo: { name: 'copilot-context-kit', version: '0.3.0' } });
     }
     if (!initialized) return error(id, -32000, 'Initialize first');
     if (method === 'tools/list') return ok({ tools: TOOLS });
@@ -69,7 +79,8 @@ export function createHandler(kit) {
       }
       try {
         const text = params.name === 'kit_read' ? await kit.read(a.path, a.mode ?? 'safe') :
-          params.name === 'kit_source' ? await kit.retrieve(a) : JSON.stringify(await kit.stats());
+          params.name === 'kit_source' ? await kit.retrieve(a) :
+          params.name === 'kit_context' ? await kit.context(a) : JSON.stringify(await kit.stats());
         return ok({ content: [{ type: 'text', text }] });
       } catch (e) { return ok({ isError: true, content: [{ type: 'text', text: `Context kit error: ${e.message}` }] }); }
     }
