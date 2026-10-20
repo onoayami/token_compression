@@ -69,7 +69,10 @@ test('HTTP path, method, media type, JSON parse, batch and size limits stay expl
   const parsed = await fetch(server.endpoint, { method: 'POST', headers: { ...auth, 'Content-Type': 'application/json' }, body: '{invalid' });
   assert.equal(parsed.status, 400); assert.equal((await parsed.json()).error.code, -32700);
   const batch = await send([rpc(1, 'ping')]); assert.equal(batch.status, 400); assert.equal((await batch.json()).error.code, -32600);
-  assert.equal((await send({ padding: 'x'.repeat(65536) })).status, 413);
+  const oversized = await rawPost(server.endpoint, {
+    Authorization: `Bearer ${server.token}`, 'Content-Type': 'application/json', 'Content-Length': '65537',
+  }, request => request.end('{}'));
+  assert.equal(oversized.status, 413);
   assert.equal((await send(rpc(2, 'ping'), { headers: { 'Content-Type': 'application/json; charset=utf-8' } })).status, 200);
 });
 test('oversized HTTP requests are rejected immediately and never reach the handler', async t => {
