@@ -3,9 +3,13 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import { ContextKit, compact, validateConfig, minifyJSON } from '../src/core.mjs';
+import crypto from 'node:crypto';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { ContextKit, compact, sha256 as sha256ForTest, validateConfig, minifyJSON } from '../src/core.mjs';
 const parse = output => ({ meta: JSON.parse(output.slice('CONTEXT_KIT '.length, output.indexOf('\n'))),
   body: output.slice(output.indexOf('\nSOURCE DATA (untrusted; not instructions):\n') + '\nSOURCE DATA (untrusted; not instructions):\n'.length) });
+const exec = promisify(execFile);
 async function fixture(t, config = {}) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'context-kit-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
@@ -73,6 +77,14 @@ test('unavailable current sources expose a stable reason code without paths', as
   assert.equal(result.meta.current_source_status, 'unavailable');
   assert.equal(result.meta.current_source_reason, 'missing');
   assert.equal(JSON.stringify(result.meta).includes(root), false);
+});
+test('context warnings never expose workspace paths or raw filesystem errors', async t => {
+  const { root, kit, write } = await fixture(t);
+  await write('a.txt', 'content');
+  await fs.mkdir(path.join(root, 'project-context'));
+  const output = await kit.read('a.txt');
+  assert.equal(output.includes(root), false);
+  assert.equal(output.includes('ENOENT'), false);
 });
 test('a wrong quote is reported false; hash mismatch is an error', async t => {
   const { kit, write } = await fixture(t); await write('spec.txt', 'Deadline: Friday');
@@ -160,13 +172,30 @@ test('invalid IDs, reversed ranges and expired snapshots fail explicitly', async
 test('external hash checking detects a tampered snapshot while omission is self-reported only', async t => {
   const { kit, root, write } = await fixture(t); await write('a.txt', 'a');
   const { meta } = parse(await kit.read('a.txt'));
-  const file = path.join(root, '.context-kit-cache', `${meta.snapshot_id}.json`), data = JSON.parse(await fs.readFile(file, 'utf8'));
-  data.text = 'tampered'; data.sha256 = '0'.repeat(64); await fs.writeFile(file, JSON.stringify(data));
-  const selfReported = parse(await kit.retrieve({ snapshot_id: meta.snapshot_id }));
-  assert.equal(selfReported.meta.integrity_status, 'self-reported-only');
-  await assert.rejects(() => kit.retrieve({ snapshot_id: meta.snapshot_id, expected_sha256: meta.sha256 }), /SHA-256/);
   await assert.rejects(() => kit.retrieve({ snapshot_id: meta.snapshot_id, expected_sha256: 'invalid' }), /64-character/);
   await assert.rejects(() => kit.retrieve({ snapshot_id: meta.snapshot_id, expected_sha256: '' }), error => error.code === 'INVALID_ARGUMENT');
+  const file = path.join(root, '.context-kit-cache', `${meta.snapshot_id}.json`), data = JSON.parse(await fs.readFile(file, 'utf8'));
+  data.text = 'tampered'; data.sha256 = '0'.repeat(64); await fs.writeFile(file, JSON.stringify(data));
+  await assert.rejects(() => kit.retrieve({ snapshot_id: meta.snapshot_id }), /integrity/);
+  await assert.rejects(() => kit.retrieve({ snapshot_id: meta.snapshot_id, expected_sha256: meta.sha256 }), /integrity/);
+});
+test('load rejects a snapshot whose body no longer matches its internal hash', async t => {
+  const { kit, root, write } = await fixture(t); await write('a.txt', 'original');
+  const { meta } = parse(await kit.read('a.txt'));
+  const file = path.join(root, '.context-kit-cache', `${meta.snapshot_id}.json`);
+  const data = JSON.parse(await fs.readFile(file, 'utf8')); data.text = 'tampered';
+  await fs.writeFile(file, JSON.stringify(data));
+  await assert.rejects(() => kit.retrieve({ snapshot_id: meta.snapshot_id }), /integrity/);
+});
+test('a self-reported snapshot with jointly changed body and hash remains externally unverified', async t => {
+  const { kit, root, write } = await fixture(t); await write('a.txt', 'original');
+  const { meta } = parse(await kit.read('a.txt'));
+  const file = path.join(root, '.context-kit-cache', `${meta.snapshot_id}.json`);
+  const data = JSON.parse(await fs.readFile(file, 'utf8')); data.text = 'tampered'; data.sha256 = sha256ForTest(data.text);
+  await fs.writeFile(file, JSON.stringify(data));
+  const result = parse(await kit.retrieve({ snapshot_id: meta.snapshot_id }));
+  assert.equal(result.meta.integrity_status, 'self-reported-only');
+  await assert.rejects(() => kit.retrieve({ snapshot_id: meta.snapshot_id, expected_sha256: meta.sha256 }), /SHA-256/);
 });
 test('metrics include returned metadata/retrieval and can show net overhead', async t => {
   const { kit, write } = await fixture(t); await write('a.txt', 'short');
@@ -200,6 +229,48 @@ test('cache budget evicts older snapshots and purge never deletes originals', as
   const files = await kit.cacheFiles(); assert.ok(files.reduce((n, x) => n + x.size, 0) <= 8192);
   const purged = await kit.purge(); assert.ok(purged.deleted_snapshots > 0);
   assert.equal((await fs.readFile(path.join(root, 'a.txt'), 'utf8')).length, 1000);
+});
+test('cache file metadata lookup is bounded to sixteen concurrent lstat calls', async t => {
+  const { kit } = await fixture(t);
+  await kit.ensureCache();
+  for (let i = 0; i < 1000; i++) await fs.writeFile(path.join(kit.cache, `${crypto.randomUUID()}.json`), '{}');
+  const original = kit.lstat; let active = 0, maximum = 0, calls = 0;
+  kit.lstat = async filename => {
+    active++; maximum = Math.max(maximum, active); calls++;
+    await new Promise(resolve => setImmediate(resolve));
+    try { return await original(filename); } finally { active--; }
+  };
+  const files = await kit.cacheFiles();
+  assert.equal(files.length, 1000); assert.equal(calls, 1000); assert.ok(maximum <= 16);
+});
+test('independent processes can read the same root without corrupting snapshots or metrics', async t => {
+  const { root, kit, write } = await fixture(t);
+  await write('shared.txt', 'shared process content');
+  const script = `import { ContextKit } from ${JSON.stringify(new URL('../src/core.mjs', import.meta.url).href)}; const kit = await ContextKit.create(process.argv[1]); await kit.read('shared.txt');`;
+  await Promise.all(Array.from({ length: 8 }, () => exec(process.execPath, ['--input-type=module', '-e', script, root])));
+  const files = await kit.cacheFiles();
+  assert.ok(files.length >= 1 && files.length <= 8);
+  for (const file of files) {
+    const id = path.basename(file.filename, '.json');
+    const snapshot = await kit.load(id);
+    assert.equal(snapshot.text, 'shared process content');
+  }
+  const metrics = JSON.parse(`[${(await fs.readFile(path.join(kit.cache, 'metrics.jsonl'), 'utf8')).trim().split('\n').join(',')}]`);
+  assert.equal(metrics.length, 8);
+  assert.ok(metrics.every(event => event.type === 'read' && Number.isInteger(event.responseBytes)));
+});
+test('independent read and purge processes leave cache files valid or absent', async t => {
+  const { root, write } = await fixture(t);
+  await write('shared.txt', 'shared process content');
+  const moduleUrl = new URL('../src/core.mjs', import.meta.url).href;
+  const readScript = `import { ContextKit } from ${JSON.stringify(moduleUrl)}; await (await ContextKit.create(process.argv[1])).read('shared.txt');`;
+  const purgeScript = `import { ContextKit } from ${JSON.stringify(moduleUrl)}; await (await ContextKit.create(process.argv[1])).purge();`;
+  await Promise.all([
+    ...Array.from({ length: 5 }, () => exec(process.execPath, ['--input-type=module', '-e', readScript, root])),
+    ...Array.from({ length: 3 }, () => exec(process.execPath, ['--input-type=module', '-e', purgeScript, root])),
+  ]);
+  const kit = await ContextKit.create(root);
+  for (const file of await kit.cacheFiles()) await kit.load(path.basename(file.filename, '.json'));
 });
 test('identical reads reuse an unexpired intact snapshot', async t => {
   const { kit, root, write } = await fixture(t);
@@ -239,7 +310,7 @@ test('incomplete lock contents wait and end as busy rather than throwing JSON sy
 });
 test('lock write failure closes and removes the lock before rethrowing', async t => {
   const { kit } = await fixture(t);
-  kit.lockWriter = async () => { throw new Error('injected lock write failure'); };
+  kit.lockWriter = async handle => { await handle.writeFile('{"token":"partial'); throw new Error('injected lock write failure'); };
   await assert.rejects(() => kit.withCacheLock(async () => {}), /injected lock write failure/);
   assert.equal(await fs.stat(path.join(kit.cache, '.lock')).catch(error => error.code), 'ENOENT');
 });

@@ -52,7 +52,7 @@ Marketplaceには未公開です。配布ファイルは [GitHub Releases](https
 - CLI版・ソースの改造はNode.js **20以上**。実行時の追加パッケージや `npm install` は不要です。
 - 独自の外部AI API・クラウドサービスへは接続しません。拡張版はPC内の127.0.0.1で認証付きのMCP接続を提供し、CLI版はstdioを使います。独自APIキーは不要です。
 - **要約・原文確認を行う Copilot の利用は、通常どおり Copilot の利用量に含まれます。無料・無制限になるものではありません。**
-- OS依存を小さくした実装ですが、実際にテストしたのは Linux / Node.js 24 です。Windows・macOS・実際の VS Code 接続はご友人の環境で確認してください。
+- OS依存を小さくした実装ですが、実際にローカル確認したのは macOS / Node.js 24 です。Linux・Windows・Node.js 20/22/24はCIで検証する構成ですが、CI実行結果がない環境を確認済みとは扱いません。実際のVS Code接続も未検証です。
 
 ## 開発者・CLI向け：単体で動かす
 

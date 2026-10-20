@@ -120,7 +120,12 @@ export async function activate(context, vscode, { kitRoot = path.join(context.ex
   };
   const safeCommand = callback => async (...args) => {
     try { return await callback(...args); }
-    catch (e) { vscode.window.showErrorMessage(`Context Kit: ${e.message}`); return { error: e.message }; }
+    catch (e) {
+      console.error(`Context Kit command failed: ${e.message}`);
+      const message = 'Context Kitの処理を完了できませんでした。設定と対象ファイルを確認してください。';
+      vscode.window.showErrorMessage(message);
+      return { error: message };
+    }
   };
   for (const [name, callback] of Object.entries({ setup, overview: showOverview, stats: showStats,
     openGlossary: () => openDoc('glossary'), openDesign: () => openDoc('design'),
@@ -147,7 +152,10 @@ export async function activate(context, vscode, { kitRoot = path.join(context.ex
       } else if (intent === 'overview') stream.markdown(fenced(formatContextOverview(JSON.parse(await requireKit().context()))));
       else if (intent === 'stats') stream.markdown(fenced(formatStats(await requireKit().stats())));
       else { stream.markdown('初期設定専用の窓口です。**@contextkit 初期設定**、**@contextkit 状況**、**@contextkit 圧縮状況** が使えます。一般の実装や相談は通常のCopilotへ戻って依頼してください。'); stream.button({ command: 'contextkit.setup', title: '初期設定を始める' }); }
-    } catch (e) { stream.markdown(`設定・確認を完了できませんでした。${e.message}\n\nファイルを確認してから、もう一度実行してください。`); }
+    } catch (e) {
+      console.error(`Context Kit chat failed: ${e.message}`);
+      stream.markdown('設定・確認を完了できませんでした。ファイルと設定を確認してから、もう一度実行してください。');
+    }
     return {};
   });
   context.subscriptions.push(participant, changed);

@@ -22,6 +22,7 @@ const ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}
 const HASH = /^[0-9a-f]{64}$/i;
 const EXTENSIONS = new Set(['.log', '.out', '.err', '.json', '.txt', '.md', '.jsonl', '.ndjson']);
 const BLOCKED_DIRS = new Set(['.git', '.ssh', '.aws', '.azure', '.gnupg', 'node_modules', CACHE]);
+const CACHE_LSTAT_CONCURRENCY = 16;
 const PROTECTED = ['error', 'fatal', 'fail', 'exception', 'traceback', 'warning', 'warn',
   'panic', 'assert', 'denied', 'timeout', 'timed out', 'not ok', 'mismatch', 'critical',
   'エラー', '失敗', '警告', '例外', '異常'];
@@ -189,6 +190,7 @@ export class ContextKit {
     this.root = root; this.realRoot = realRoot; this.config = config; this.cache = path.join(root, CACHE);
     this.snapshotIndex = new Map();
     this.lockWriter = (handle, owner) => handle.writeFile(JSON.stringify(owner));
+    this.lstat = fs.lstat;
   }
 
   checkRelative(relative) {
@@ -232,20 +234,23 @@ export class ContextKit {
       return registry.readById(id);
     }
     if (action !== 'list' || id !== undefined) throw new PublicError('INVALID_ARGUMENT', 'Context list does not accept an id');
-    const output = JSON.stringify(await registry.overview({ offset, limit }));
-    await this.record({ type: 'context', responseBytes: bytes(output) });
-    return output;
+    const result = await registry.overview({ offset, limit });
+    const provisional = JSON.stringify(result);
+    const metrics = await this.tryRecord({ type: 'context', responseBytes: bytes(provisional) });
+    result.metrics_recorded = metrics.recorded;
+    if (!metrics.recorded) result.metrics_warning = metrics.warning;
+    return JSON.stringify(result);
   }
   async contextRegistration(sourceRelative) {
     try { return { doc: await new ContextRegistry(this).registration(sourceRelative) }; }
-    catch (e) { return { doc: null, warning: `Context registration unavailable: ${e.message}` }; }
+    catch (e) { console.error(`Context registration failed: ${e.message}`); return { doc: null, warning: 'Context registration unavailable' }; }
   }
   async trackContextOutput(source, registration, range) {
     if (!registration.doc) return registration.warning ? { context_registration_warning: registration.warning } : {};
     try {
       await new ContextRegistry(this).noteOutput(source, registration.doc, range);
       return { context_output_tracking: 'recorded' };
-    } catch (e) { return { context_output_tracking: 'failed', context_tracking_warning: e.message }; }
+    }     catch (e) { console.error(`Context output tracking failed: ${e.message}`); return { context_output_tracking: 'failed', context_tracking_warning: 'Context output tracking unavailable' }; }
   }
   async ensureCache() {
     try { await fs.mkdir(this.cache, { mode: 0o700 }); }
@@ -257,19 +262,19 @@ export class ContextKit {
     await this.ensureCache();
     const lockfile = path.join(this.cache, '.lock');
     const owner = { token: randomUUID(), pid: process.pid, hostname: hostname(), createdAt: new Date().toISOString() };
-    let handle;
+    let handle, lockIdentity;
     for (let attempt = 0; attempt < 200; attempt++) {
       try {
         handle = await fs.open(lockfile, 'wx', 0o600);
+        lockIdentity = await handle.stat();
         try {
           await this.lockWriter(handle, owner);
         } catch (writeError) {
           try { await handle.close(); } catch (closeError) { console.error(`Cache lock close failed: ${closeError.message}`); }
           try {
-            const raw = await fs.readFile(lockfile, 'utf8');
-            let current = null;
-            try { current = JSON.parse(raw); } catch { /* Empty or partial content is ours during failed acquisition. */ }
-            if (!raw || current?.token === owner.token) await fs.unlink(lockfile);
+            const currentStat = await fs.stat(lockfile);
+            const sameFile = currentStat.dev === lockIdentity.dev && currentStat.ino === lockIdentity.ino;
+            if (sameFile) await fs.unlink(lockfile);
           } catch (cleanupError) {
             if (cleanupError.code !== 'ENOENT') console.error(`Cache lock cleanup failed: ${cleanupError.message}`);
           }
@@ -334,12 +339,17 @@ export class ContextKit {
   async cacheFiles() {
     await this.ensureCache();
     const files = [];
-    for (const name of await fs.readdir(this.cache)) {
-      if (!name.endsWith('.json') || !ID.test(name.slice(0, -5))) continue;
-      const filename = path.join(this.cache, name), stat = await fs.lstat(filename);
-      if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('Unexpected cache entry');
-      files.push({ filename, size: stat.size, time: stat.mtimeMs });
-    }
+    const names = (await fs.readdir(this.cache)).filter(name => name.endsWith('.json') && ID.test(name.slice(0, -5)));
+    const workers = Array.from({ length: Math.min(CACHE_LSTAT_CONCURRENCY, names.length) }, async () => {
+      while (names.length) {
+        const name = names.pop();
+        const filename = path.join(this.cache, name), stat = await this.lstat(filename);
+        if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('Unexpected cache entry');
+        files.push({ filename, size: stat.size, time: stat.mtimeMs });
+      }
+    });
+    await Promise.all(workers);
+    /* The pool above bounds filesystem calls; sorting preserves eviction order. */
     return files.sort((a, b) => a.time - b.time);
   }
   async prune(required) {
@@ -384,6 +394,8 @@ export class ContextKit {
     const data = JSON.parse(text);
     if (data.version !== 1 || data.id !== id || typeof data.text !== 'string' ||
         typeof data.source !== 'string' || typeof data.sha256 !== 'string' || !HASH.test(data.sha256))
+      throw new PublicError('CONTEXT_KIT_ERROR', 'Snapshot integrity check failed');
+    if (sha256(data.text) !== data.sha256.toLowerCase())
       throw new PublicError('CONTEXT_KIT_ERROR', 'Snapshot integrity check failed');
     const age = Date.now() - Date.parse(data.createdAt);
     if (!Number.isFinite(age) || age < -60000 || age > this.config.cacheTTLHours * 3600000)
@@ -544,7 +556,7 @@ export class ContextKit {
         total_response_bytes: readBytes + retrieveBytes + contextBytes,
         reference_byte_delta_vs_original_full_text: originalBytes - readBytes - retrieveBytes - contextBytes,
         reference_reduction_percent_vs_original_full_text: percent(originalBytes, readBytes + retrieveBytes + contextBytes),
-        note: 'Reference comparison against original full text, not measured savings in Copilot. Includes returned metadata, context index and source lookup text; excludes tool schemas, prompts, stats calls, protocol envelopes and repeated model context use.'
+        note: 'Reference comparison against original full text, not measured savings in Copilot. Includes returned metadata and context index text, but responseBytes excludes the final metrics_recorded/metrics_warning fields to avoid circular accounting; excludes tool schemas, prompts, stats calls, protocol envelopes and repeated model context use.'
       },
       coverage: {
         lossy_preview_calls: reads.filter(e => e.lossy).length,
@@ -559,7 +571,7 @@ export class ContextKit {
       byte_delta_after_retrieval: originalBytes - readBytes - retrieveBytes - contextBytes,
       model_tokens: { status: 'not_measured', reduction_percent: null },
       copilot_billing: { status: 'not_measured', saved_amount: null },
-      note: 'Recent UTF-8 bytes and Unicode character counts only. Negative reference deltas mean overhead exceeded reduction. Not measured model tokens, cost savings, context size or quality. History rotates around 1 MiB; purge resets it. Chat handoff/summary costs are not measured.'
+      note: 'Recent UTF-8 bytes and Unicode character counts only. Response byte metrics intentionally exclude final metrics_recorded/metrics_warning fields. Negative reference deltas mean overhead exceeded reduction. Not measured model tokens, cost savings, context size or quality. History rotates around 1 MiB; purge resets it. Chat handoff/summary costs are not measured.'
     };
   }
   async purge() {

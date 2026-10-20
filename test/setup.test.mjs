@@ -86,7 +86,7 @@ test('invalid descriptions, outside paths, non-Markdown, blocked credentials, ov
   await assert.rejects(() => plan({ description: 'x'.repeat(2001) }));
   await assert.rejects(() => plan({ description: 'x\0y' }));
   for (const filename of ['../outside.md', 'file.txt', 'secret.md', 'large.md', 'folder.md']) {
-    await assert.rejects(() => plan({ designPaths: [filename] }), filename);
+    await assert.rejects(() => plan({ designPaths: [filename] }), error => !error.message.includes(filename) && !error.message.includes(root));
   }
   assert.equal(await exists(path.join(root, 'project-context')), false);
   assert.equal(await exists(path.join(root, '.github')), false);

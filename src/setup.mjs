@@ -60,7 +60,7 @@ export async function planSetup({ root, templateRoot, description = '', designPa
         if (typeof requested !== 'string' || !requested.toLowerCase().endsWith('.md')) throw new Error('Choose Markdown (.md) files only');
         const relativeRequested = path.isAbsolute(requested) ? path.relative(root, requested) : requested;
         if (!relativeRequested || relativeRequested.startsWith(`..${path.sep}`) || path.isAbsolute(relativeRequested))
-          throw new Error(`Design path is outside workspace: ${requested}`);
+          throw new Error('Design path is outside workspace');
         const actual = await kit.sourcePath(relativeRequested); // Workspace, extension, secret-path and symlink checks.
         const info = await fs.stat(actual);
         if (!info.isFile() || info.size > kit.config.maxInputBytes) throw new Error('Design file must be a regular file within the input byte limit');

@@ -177,7 +177,10 @@ export class ContextRegistry {
       notice: 'No catalog is configured. Copy project-context templates into the workspace or register existing workspace-relative Markdown paths. Bodies are not automatically loaded.' };
     if (offset > catalog.documents.length) fail('offset exceeds document count');
     let ledger = { version: 1, records: [] }, trackingError = null;
-    try { ledger = await this.readLedger(); } catch (e) { trackingError = e.message; }
+    try { ledger = await this.readLedger(); } catch (e) {
+      console.error(`Context ledger read failed: ${e.message}`);
+      trackingError = 'Context output tracking unavailable';
+    }
     const selected = catalog.documents.slice(offset, offset + limit), documents = [];
     for (const doc of selected) documents.push(await this.describe(doc, ledger, trackingError));
     return { configured: true, catalog_path: CATALOG_PATH, total_documents: catalog.documents.length,
