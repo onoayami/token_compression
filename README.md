@@ -112,6 +112,12 @@ node src/cli.mjs config --root "/absolute/path/to/project" --format portable
 
 Node が見つからない場合は `node --version` と `node -p "process.execPath"` で、実行環境と絶対パスを確認してください。
 
+### 困ったとき
+
+- UTF-8以外のログ、NULを含むファイル、読み取り中に変化するファイルは拒否されます。ログを一時コピーしてから読み、必要ならUTF-8へ変換してください。
+- 出力記録が壊れた場合は、他の処理が動いていないことを確認して `node src/cli.mjs purge --root "/absolute/path/to/project"` を実行し、必要な資料を読み直してください。
+- Windowsで長いパスが必要な場合は、管理者の方針を確認したうえでレジストリの `LongPathsEnabled` を有効にし、再起動後に再実行してください。組織管理下の端末では変更できない場合があります。
+
 ### 3. 引き継ぎ用プロンプトを配置
 
 `integration/prompts/` の6ファイルを、開発プロジェクトの `.github/prompts/` にコピーします。
