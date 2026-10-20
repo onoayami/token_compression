@@ -189,7 +189,10 @@ test('cache budget evicts older snapshots and purge never deletes originals', as
   const { kit, root, write } = await fixture(t, { maxInputBytes: 1024, maxCacheBytes: 8192 });
   await write('a.txt', 'a'.repeat(1000));
   const ids = [];
-  for (let i = 0; i < 10; i++) ids.push(parse(await kit.read('a.txt')).meta.snapshot_id);
+  for (let i = 0; i < 10; i++) {
+    await write('a.txt', `${i}${'a'.repeat(999)}`);
+    ids.push(parse(await kit.read('a.txt')).meta.snapshot_id);
+  }
   await assert.rejects(() => kit.retrieve({ snapshot_id: ids[0] }));
   const files = await kit.cacheFiles(); assert.ok(files.reduce((n, x) => n + x.size, 0) <= 8192);
   const purged = await kit.purge(); assert.ok(purged.deleted_snapshots > 0);

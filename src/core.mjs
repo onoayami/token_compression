@@ -79,17 +79,17 @@ export function validateConfig(input = {}) {
 // duplicate keys, escapes and string whitespace are preserved verbatim.
 export function minifyJSON(text) {
   JSON.parse(text);
-  let inside = false, escaped = false, result = '';
+  let inside = false, escaped = false; const result = [];
   for (const ch of text) {
     if (inside) {
-      result += ch;
+      result.push(ch);
       if (escaped) escaped = false;
       else if (ch === '\\') escaped = true;
       else if (ch === '"') inside = false;
-    } else if (ch === '"') { inside = true; result += ch; }
-    else if (!' \t\r\n'.includes(ch)) result += ch;
+    } else if (ch === '"') { inside = true; result.push(ch); }
+    else if (!' \t\r\n'.includes(ch)) result.push(ch);
   }
-  return result;
+  return result.join('');
 }
 
 export function compact(text, kind, mode, c = validateConfig()) {
@@ -103,13 +103,14 @@ export function compact(text, kind, mode, c = validateConfig()) {
   }
   if (kind !== 'log') return base; // Never summarize requirements or source code here.
   const lines = text.split('\n');
-  const protectedLine = line => [...PROTECTED, ...c.extraProtectedWords]
-    .some(word => line.toLowerCase().includes(word.toLowerCase()));
+  const protectedWords = [...PROTECTED, ...c.extraProtectedWords].map(word => word.toLowerCase());
+  const lowerLines = lines.map(line => line.toLowerCase());
+  const protectedLine = index => protectedWords.some(word => lowerLines[index].includes(word));
   let body, omittedLines = 0, foldedLines = 0;
   if (mode === 'preview') {
     const keep = new Set();
     for (let i = 0; i < lines.length; i++) {
-      if (i < c.previewHead || i >= lines.length - c.previewTail || protectedLine(lines[i])) {
+      if (i < c.previewHead || i >= lines.length - c.previewTail || protectedLine(i)) {
         for (let k = Math.max(0, i - c.contextLines); k <= Math.min(lines.length - 1, i + c.contextLines); k++) keep.add(k);
       }
     }
@@ -128,7 +129,7 @@ export function compact(text, kind, mode, c = validateConfig()) {
       let end = i + 1;
       while (end < lines.length && lines[end] === lines[i]) end++;
       result.push(lines[i]);
-      if (end - i >= 3 && lines[i].trim() && !protectedLine(lines[i])) {
+      if (end - i >= 3 && lines[i].trim() && !protectedLine(i)) {
         foldedLines += end - i - 1;
         result.push(`[context-kit: original lines ${i + 2}-${end} are ${end - i - 1} additional exact copies of line ${i + 1}]`);
       } else {
@@ -349,16 +350,18 @@ export class ContextKit {
     const ext = path.extname(filename).toLowerCase();
     const kind = ext === '.json' ? 'json' : ['.log', '.out', '.err'].includes(ext) ? 'log' : 'text';
     const result = compact(text, kind, mode, this.config);
-    const bodyComplete = chars(result.body).length <= this.config.maxOutputChars;
+    const originalCharacters = chars(text).length, compactedCharacters = chars(result.body).length;
+    const originalBytes = bytes(text), compactedBytes = bytes(result.body);
+    const bodyComplete = compactedCharacters <= this.config.maxOutputChars;
     const body = bodyComplete ? result.body : '';
     const tracking = await this.trackContextOutput(source, registration, { start: 0, end: bodyComplete ? chars(text).length : 0, hasBody: bodyComplete && kind === 'text' && !result.lossy });
     const meta = { snapshot_id: source.id, sha256: source.sha256, file: source.source,
       captured_at: source.createdAt,
       ...(registration.doc ? { context_document: new ContextRegistry(this).publicDocument(registration.doc) } : {}),
       ...tracking, original_lines: lineParts(text).length,
-      original_bytes: bytes(text), original_characters: chars(text).length,
-      compacted_content_bytes: bytes(result.body), compacted_content_characters: chars(result.body).length,
-      content_byte_reduction_percent: bytes(text) ? Math.round((1 - bytes(result.body) / bytes(text)) * 10000) / 100 : null,
+      original_bytes: originalBytes, original_characters: originalCharacters,
+      compacted_content_bytes: compactedBytes, compacted_content_characters: compactedCharacters,
+      content_byte_reduction_percent: originalBytes ? Math.round((1 - compactedBytes / originalBytes) * 10000) / 100 : null,
       kind, method: result.method,
       lossy_preview: result.lossy, omitted_original_lines: result.omittedLines,
       folded_exact_repeat_lines: result.foldedLines, body_complete: bodyComplete,
@@ -367,8 +370,8 @@ export class ContextKit {
         result.lossy ? 'LOSSY preview. Absence here does not prove absence in original. Recheck important claims.' :
         result.notice || 'For citations use original line numbers from kit_source, not compacted output positions.' };
     const provisionalOutput = format(meta, body);
-    const metrics = await this.tryRecord({ version: 2, type: 'read', inputBytes: bytes(text), inputChars: chars(text).length,
-      compactBytes: bytes(result.body), compactChars: chars(result.body).length,
+    const metrics = await this.tryRecord({ version: 2, type: 'read', inputBytes: originalBytes, inputChars: originalCharacters,
+      compactBytes: compactedBytes, compactChars: compactedCharacters,
       bodyBytes: bytes(body), responseBytes: bytes(provisionalOutput), lossy: result.lossy, bodyComplete,
       foldedLines: result.foldedLines, omittedLines: result.omittedLines });
     meta.metrics_recorded = metrics.recorded;
