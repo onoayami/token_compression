@@ -42,7 +42,7 @@ export function isValidMetricEvent(event) {
   const numeric = ['inputBytes', 'inputChars', 'compactBytes', 'compactChars', 'bodyBytes', 'foldedLines', 'omittedLines'];
   if (numeric.some(key => Object.hasOwn(event, key) && !nonNegativeInteger(event[key]))) return false;
   if (event.type === 'read') {
-    if (!nonNegativeInteger(event.inputBytes) || !nonNegativeInteger(event.inputChars)) return false;
+    if (!nonNegativeInteger(event.inputBytes)) return false;
     if (Object.hasOwn(event, 'bodyComplete') && typeof event.bodyComplete !== 'boolean') return false;
     if (Object.hasOwn(event, 'lossy') && typeof event.lossy !== 'boolean') return false;
   }

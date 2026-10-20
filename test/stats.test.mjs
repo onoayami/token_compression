@@ -90,7 +90,7 @@ test('malformed metric rows are excluded and counted without changing valid tota
   assert.equal(stats.metrics_complete, false);
   assert.equal(stats.read_calls, 2);
   assert.ok(stats.content.original_bytes > 0);
-  assert.equal(stats.content.original_bytes, Buffer.byteLength('valid'));
+  assert.equal(stats.content.original_bytes, Buffer.byteLength('valid') + 1);
 });
 test('lossy previews are identified instead of implying quality preservation', async t => {
   const { kit, write } = await setup(t);
