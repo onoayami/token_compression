@@ -5,6 +5,7 @@
 - 読み取り対象は設定したルート内の通常のUTF-8ファイル、またはBOM付きUTF-16LE/UTF-16BEファイルに限定。UTF-16はデコード後のテキストをUTF-8化してSHA-256を計算し、応答メタデータに`source_encoding`を示す。
 - ルート外へのパストラバーサル、ルート外を指すシンボリックリンク、代表的な秘密ファイル名、キャッシュ自体、未対応拡張子を拒否。`.docker`、`.kube`、`.terraform`、`.gcloud`、秘密鍵・Terraform state・各種サービスアカウント名も補助的に遮断し、ハードリンク（`nlink > 1`）は拒否する。
 - 原文は `.context-kit-cache/` 内に保存。作成時のUnixパーミッションはディレクトリ700・ファイル600。Windowsでは同等のACLを保証しない。
+- キャッシュの700パーミッション検査と「Context cache permissions are broader than 0700」警告はPOSIX環境のみで行い、Windowsでは行わない。
 - 原文の内容とSHA-256を照合し、期限切れ・取得失敗・不一致を明示。
 - 読み取り時は開く前後のファイル識別子を照合し、差し替えを検出する。macOS/Linuxでは`O_NOFOLLOW`も利用する。Windowsでは同等のフラグやinode情報が保証されないため、従来の実体確認と読み取り中のサイズ・時刻確認が限界となる。
 - MCPへ返す自前エラーは `FILE_NOT_FOUND`、`ACCESS_DENIED`、`BLOCKED`、`TOO_LARGE`、`INVALID_ARGUMENT`、`UNSUPPORTED_ENCODING`、`SOURCE_CHANGED`、`CONTEXT_KIT_ERROR` の許可リストに限定し、メッセージは固定文言です。詳細（入力値・パスを含む場合があります）はstderrの診断ログだけに出します。

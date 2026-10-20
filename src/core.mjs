@@ -288,7 +288,7 @@ export class ContextKit {
     catch (error) { if (error.code !== 'EEXIST') throw error; }
     const info = await fs.lstat(this.cache);
     if (info.isSymbolicLink() || !info.isDirectory()) throw new Error('Cache must be a non-symlink directory');
-    if ((info.mode & 0o777) !== 0o700) console.error('Context cache permissions are broader than 0700');
+    if (process.platform !== 'win32' && (info.mode & 0o777) !== 0o700) console.error('Context cache permissions are broader than 0700');
     const ignore = path.join(this.cache, '.gitignore');
     try { await fs.writeFile(ignore, '*\n', { flag: 'wx', mode: 0o600 }); }
     catch (error) { if (error.code !== 'EEXIST') throw error; }
