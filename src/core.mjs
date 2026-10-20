@@ -35,6 +35,20 @@ const integer = (value, name, low, high) => {
     throw new Error(`${name} must be an integer in ${low}..${high}`);
   return value;
 };
+const nonNegativeInteger = value => Number.isInteger(value) && value >= 0;
+export function isValidMetricEvent(event) {
+  if (!event || typeof event !== 'object' || !['read', 'retrieve', 'context'].includes(event.type) ||
+      !nonNegativeInteger(event.responseBytes)) return false;
+  const numeric = ['inputBytes', 'inputChars', 'compactBytes', 'compactChars', 'bodyBytes', 'foldedLines', 'omittedLines'];
+  if (numeric.some(key => Object.hasOwn(event, key) && !nonNegativeInteger(event[key]))) return false;
+  if (event.type === 'read') {
+    if (!nonNegativeInteger(event.inputBytes) || !nonNegativeInteger(event.inputChars)) return false;
+    if (Object.hasOwn(event, 'bodyComplete') && typeof event.bodyComplete !== 'boolean') return false;
+    if (Object.hasOwn(event, 'lossy') && typeof event.lossy !== 'boolean') return false;
+  }
+  if (event.type === 'retrieve' && !nonNegativeInteger(event.bodyBytes)) return false;
+  return true;
+}
 
 export function validateConfig(input = {}) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Config must be an object');
@@ -343,8 +357,17 @@ export class ContextKit {
   }
   async stats() {
     await this.ensureCache();
-    let events = [];
-    try { events = (await limitedRead(path.join(this.cache, 'metrics.jsonl'), 2 * 1024 * 1024)).trim().split('\n').filter(Boolean).map(JSON.parse); }
+    let events = [], invalidMetricRows = 0;
+    try {
+      const text = (await limitedRead(path.join(this.cache, 'metrics.jsonl'), 2 * 1024 * 1024)).trim();
+      for (const line of text ? text.split('\n') : []) {
+        try {
+          const event = JSON.parse(line);
+          if (isValidMetricEvent(event)) events.push(event);
+          else invalidMetricRows++;
+        } catch { invalidMetricRows++; }
+      }
+    }
     catch (error) { if (error.code !== 'ENOENT') throw error; }
     const reads = events.filter(e => e.type === 'read');
     const retrievals = events.filter(e => e.type === 'retrieve');
@@ -359,6 +382,7 @@ export class ContextKit {
     return {
       scope: 'recent_local_file_reads_only',
       read_calls: reads.length, retrieve_calls: retrievals.length, context_index_calls: contextEvents.length,
+      invalid_metric_rows: invalidMetricRows, metrics_complete: invalidMetricRows === 0,
       content: {
         measured_read_calls: measured.length, legacy_unmeasured_read_calls: reads.length - measured.length,
         original_bytes: before, compacted_bytes: after, reduction_bytes: before - after,

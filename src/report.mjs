@@ -5,6 +5,7 @@ export function formatStats(stats) {
   return [
     '圧縮状況レポート（このルートのローカル資料のみ）',
     `読み取り ${number(stats.read_calls)}回 / 原文確認 ${number(stats.retrieve_calls)}回`,
+    `統計行の不正値: ${number(stats.invalid_metric_rows)}行 / 完全: ${stats.metrics_complete ? 'はい' : 'いいえ'}`,
     '',
     '【1. 資料そのものの変化】',
     `バイト数: ${number(c.original_bytes)} → ${number(c.compacted_bytes)} bytes`,
