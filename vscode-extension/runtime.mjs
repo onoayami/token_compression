@@ -29,7 +29,11 @@ const fenced = value => {
   const runs = value.match(/`+/g) || [], width = Math.max(3, ...runs.map(s => s.length + 1));
   const fence = '`'.repeat(width); return `${fence}text\n${value}\n${fence}\n`;
 };
-export async function activate(context, vscode, { kitRoot = path.join(context.extensionPath, 'kit') } = {}) {
+export async function activate(context, vscode, {
+  kitRoot = path.join(context.extensionPath, 'kit'),
+  startServer = startLocalServer,
+  exposeLifecycle = false,
+} = {}) {
   const moduleAt = name => import(pathToFileURL(path.join(kitRoot, 'src', name)).href);
   const [{ ContextKit }, { createHandler }, { planSetup, applySetup }, { formatContextOverview, ContextRegistry }, { formatStats }] = await Promise.all([
     moduleAt('core.mjs'), moduleAt('server.mjs'), moduleAt('setup.mjs'), moduleAt('context.mjs'), moduleAt('report.mjs'),
@@ -54,7 +58,7 @@ export async function activate(context, vscode, { kitRoot = path.join(context.ex
     await stopNow();
     kit = await ContextKit.create(selected);
     const handle = createHandler(kit);
-    server = await startLocalServer(async request => {
+    server = await startServer(async request => {
       assertLocal();
       if (!permittedRoot(selected)) throw new Error('作業フォルダが閉じられました。');
       return handle(request);
@@ -175,5 +179,5 @@ export async function activate(context, vscode, { kitRoot = path.join(context.ex
   }
   const dispose = async () => { if (disposed) return; disposed = true; await stop(); };
   context.subscriptions.push({ dispose: () => { void dispose(); } });
-  return { dispose };
+  return exposeLifecycle ? { dispose, start, stop } : { dispose };
 }

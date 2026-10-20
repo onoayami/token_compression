@@ -10,6 +10,11 @@ import { activate, determineIntent, httpDefinition } from '../vscode-extension/r
 import { applySetup, planSetup } from '../src/setup.mjs';
 const exec = promisify(execFile), kitRoot = fileURLToPath(new URL('../', import.meta.url));
 const uri = filename => ({ scheme: 'file', fsPath: filename, toString: () => `file://${filename}` });
+const deferred = () => {
+  let resolve;
+  const promise = new Promise(value => { resolve = value; });
+  return { promise, resolve };
+};
 const parseURI = value => ({ toString: () => value });
 class EventEmitter {
   listeners = [];
@@ -45,7 +50,9 @@ async function fixture(t, options = {}) {
     lm: { registerMcpServerDefinitionProvider: (id, provider) => { seen.providerId = id; seen.provider = provider; return { dispose() {} }; } },
     chat: { createChatParticipant: (id, handler) => { seen.participantId = id; seen.participant = handler; return { dispose() {} }; } },
   };
-  const manager = await activate(context, vscode, { kitRoot });
+  const manager = await activate(context, vscode, {
+    kitRoot, startServer: options.startServer, exposeLifecycle: options.exposeLifecycle,
+  });
   t.after(async () => { await manager.dispose(); for (const disposable of context.subscriptions) disposable.dispose(); });
   const chat = async prompt => {
     const output = { markdown: [], progress: [], buttons: [] };
@@ -53,6 +60,21 @@ async function fixture(t, options = {}) {
     return output;
   };
   return { root, context, vscode, seen, commands, values, manager, chat, foldersChanged };
+}
+function delayedServerFactory() {
+  const started = deferred(), release = deferred();
+  const state = { starts: 0, closes: 0, started: started.promise, release: release.resolve };
+  state.startServer = async () => {
+    state.starts++;
+    started.resolve();
+    await release.promise;
+    return {
+      endpoint: `http://127.0.0.1:51234/mcp-${state.starts}`,
+      token: 'test-token',
+      close: async () => { state.closes++; },
+    };
+  };
+  return state;
 }
 test('chat phrase routes only setup, status and stats; regular messages show help', () => {
   assert.equal(determineIntent({ prompt: '初期設定' }), 'setup');
@@ -158,6 +180,26 @@ test('enabled workspace configuration restores server on a later activation with
   const next = await activate(context, vscode, { kitRoot }); t.after(() => next.dispose());
   assert.equal((await seen.provider.provideMcpServerDefinitions()).length, 1);
   assert.equal(await fs.readFile(path.join(root, 'project-context/overview.md'), 'utf8'), before);
+});
+test('concurrent starts create one local server', async t => {
+  const state = delayedServerFactory();
+  const { root, manager } = await fixture(t, { startServer: state.startServer, exposeLifecycle: true });
+  const first = manager.start(root), second = manager.start(root);
+  await state.started; state.release();
+  await Promise.all([first, second]);
+  assert.equal(state.starts, 1);
+  assert.equal(state.closes, 0);
+});
+test('a concurrent stop waits for start and closes the only local server', async t => {
+  const state = delayedServerFactory();
+  const { root, manager } = await fixture(t, { startServer: state.startServer, exposeLifecycle: true });
+  const starting = manager.start(root);
+  await state.started;
+  const stopping = manager.stop();
+  state.release();
+  await Promise.all([starting, stopping]);
+  assert.equal(state.starts, 1);
+  assert.equal(state.closes, 1);
 });
 test('staging uses official-package layout, includes runtime/templates and excludes tests, caches and dependencies', async t => {
   const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'context-kit-stage-')); t.after(() => fs.rm(temp, { recursive: true, force: true }));
