@@ -414,6 +414,7 @@ test('Windows lock unlink retries sharing violations and permits the next lock',
 });
 test('POSIX lock unlink permission errors are logged without retrying', async t => {
   const { kit } = await fixture(t);
+  kit.lockPlatform = 'darwin';
   let attempts = 0;
   const errors = [];
   const originalError = console.error;
