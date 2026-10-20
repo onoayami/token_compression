@@ -160,6 +160,18 @@ test('metrics include returned metadata/retrieval and can show net overhead', as
   assert.ok(stats.read_response_bytes_including_metadata > 5); assert.ok(stats.byte_delta_after_retrieval < 0);
   assert.match(stats.note, /Not measured model tokens/);
 });
+test('metric storage failures do not fail reads or retrievals', async t => {
+  const { kit, root, write } = await fixture(t);
+  await fs.mkdir(path.join(root, '.context-kit-cache'));
+  await fs.mkdir(path.join(root, '.context-kit-cache', 'metrics.jsonl'));
+  await write('a.txt', 'content');
+  const read = parse(await kit.read('a.txt'));
+  assert.equal(read.meta.metrics_recorded, false);
+  assert.equal(read.meta.metrics_warning, 'Metrics could not be recorded');
+  const retrieved = parse(await kit.retrieve({ snapshot_id: read.meta.snapshot_id }));
+  assert.equal(retrieved.meta.metrics_recorded, false);
+  assert.equal(retrieved.meta.metrics_warning, 'Metrics could not be recorded');
+});
 test('cache budget evicts older snapshots and purge never deletes originals', async t => {
   const { kit, root, write } = await fixture(t, { maxInputBytes: 1024, maxCacheBytes: 8192 });
   await write('a.txt', 'a'.repeat(1000));

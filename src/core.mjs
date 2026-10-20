@@ -286,6 +286,12 @@ export class ContextKit {
     } catch (error) { if (error.code !== 'ENOENT') throw error; }
     await fs.writeFile(filename, `${JSON.stringify({ at: new Date().toISOString(), ...event })}\n`, { flag, mode: 0o600 });
   }
+  async tryRecord(event) {
+    try { await this.record(event); return { recorded: true }; }
+    catch (error) {
+      return { recorded: false, warning: 'Metrics could not be recorded', reason: error.code ?? 'INVALID_METRICS_STORAGE' };
+    }
+  }
   async read(requested, mode = 'safe') {
     if (!['safe', 'preview'].includes(mode)) throw new Error('mode must be safe or preview');
     const filename = await this.sourcePath(requested);
@@ -312,12 +318,14 @@ export class ContextKit {
       notice: !bodyComplete ? 'Body too large: retrieve original pages with kit_source. Nothing is silently truncated.' :
         result.lossy ? 'LOSSY preview. Absence here does not prove absence in original. Recheck important claims.' :
         result.notice || 'For citations use original line numbers from kit_source, not compacted output positions.' };
-    const output = format(meta, body);
-    await this.record({ version: 2, type: 'read', inputBytes: bytes(text), inputChars: chars(text).length,
+    const provisionalOutput = format(meta, body);
+    const metrics = await this.tryRecord({ version: 2, type: 'read', inputBytes: bytes(text), inputChars: chars(text).length,
       compactBytes: bytes(result.body), compactChars: chars(result.body).length,
-      bodyBytes: bytes(body), responseBytes: bytes(output), lossy: result.lossy, bodyComplete,
+      bodyBytes: bytes(body), responseBytes: bytes(provisionalOutput), lossy: result.lossy, bodyComplete,
       foldedLines: result.foldedLines, omittedLines: result.omittedLines });
-    return output;
+    meta.metrics_recorded = metrics.recorded;
+    if (!metrics.recorded) meta.metrics_warning = metrics.warning;
+    return format(meta, body);
   }
   async retrieve({ snapshot_id, expected_sha256, start_line = 1, end_line, offset = 0, limit, quote } = {}) {
     const source = await this.load(snapshot_id);
@@ -351,9 +359,11 @@ export class ContextKit {
       current_source_status: currentSourceStatus,
       ...(quote !== undefined ? { quote_match_in_requested_lines: selected.includes(quote) } : {}),
       notice: 'Historical original. A matching quote/hash confirms text identity, NOT truth or that it supports a claim. Offsets count Unicode code points.' };
-    const output = format(meta, body);
-    await this.record({ type: 'retrieve', responseBytes: bytes(output), bodyBytes: bytes(body) });
-    return output;
+    const provisionalOutput = format(meta, body);
+    const metrics = await this.tryRecord({ type: 'retrieve', responseBytes: bytes(provisionalOutput), bodyBytes: bytes(body) });
+    meta.metrics_recorded = metrics.recorded;
+    if (!metrics.recorded) meta.metrics_warning = metrics.warning;
+    return format(meta, body);
   }
   async stats() {
     await this.ensureCache();
