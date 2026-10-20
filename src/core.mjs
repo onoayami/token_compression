@@ -258,11 +258,27 @@ export class ContextKit {
       } catch (error) {
         if (error.code !== 'EEXIST') throw error;
         try {
-          const current = JSON.parse(await fs.readFile(lockfile, 'utf8'));
-          if (current.hostname === owner.hostname && Number.isInteger(current.pid)) {
+          const raw = await fs.readFile(lockfile, 'utf8');
+          let current;
+          try { current = JSON.parse(raw); } catch { current = null; }
+          const validOwner = current && typeof current.token === 'string' && current.token &&
+            Number.isInteger(current.pid) && current.pid > 0 &&
+            typeof current.hostname === 'string' && current.hostname &&
+            typeof current.createdAt === 'string' && current.createdAt;
+          if (validOwner && current.hostname === owner.hostname) {
             let alive = true;
             try { process.kill(current.pid, 0); } catch (probe) { alive = probe.code !== 'ESRCH'; }
-            if (!alive) await fs.unlink(lockfile);
+            if (!alive) {
+              const reclaim = `${lockfile}.reclaim.${randomUUID()}`;
+              try {
+                await fs.rename(lockfile, reclaim);
+                const reclaimed = JSON.parse(await fs.readFile(reclaim, 'utf8'));
+                if (reclaimed.token === current.token) await fs.unlink(reclaim);
+                else await fs.unlink(reclaim);
+              } catch (reclaimError) {
+                if (!['ENOENT', 'EEXIST'].includes(reclaimError.code)) throw reclaimError;
+              }
+            }
           }
         } catch (staleError) {
           if (!['ENOENT', 'EACCES'].includes(staleError.code)) throw staleError;
@@ -270,7 +286,7 @@ export class ContextKit {
         await new Promise(resolve => setTimeout(resolve, 10));
       }
     }
-    if (!handle) throw new Error('Cache is busy; retry later');
+    if (!handle) throw new PublicError('CONTEXT_KIT_ERROR', 'Cache is busy; retry later');
     try { return await fn(); }
     finally {
       await handle.close();

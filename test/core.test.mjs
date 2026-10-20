@@ -227,3 +227,27 @@ test('dead same-host lock owners can be recovered, but live owners are not time-
   await kit.read('a.txt');
   assert.equal(await fs.stat(lock).catch(error => error.code), 'ENOENT');
 });
+test('incomplete lock contents wait and end as busy rather than throwing JSON syntax errors', async t => {
+  const { kit } = await fixture(t);
+  await kit.ensureCache();
+  const lock = path.join(kit.cache, '.lock');
+  await fs.writeFile(lock, '');
+  await assert.rejects(() => kit.withCacheLock(async () => {}), /Cache is busy/);
+});
+test('concurrent stale-lock recovery admits only one critical section', async t => {
+  const { kit } = await fixture(t);
+  await kit.ensureCache();
+  const lock = path.join(kit.cache, '.lock');
+  await fs.writeFile(lock, JSON.stringify({
+    token: 'dead-owner', pid: 999999, hostname: (await import('node:os')).hostname(),
+    createdAt: new Date().toISOString(),
+  }));
+  let active = 0, maximum = 0;
+  await Promise.all(Array.from({ length: 20 }, () => kit.withCacheLock(async () => {
+    active++;
+    maximum = Math.max(maximum, active);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    active--;
+  })));
+  assert.equal(maximum, 1);
+});
