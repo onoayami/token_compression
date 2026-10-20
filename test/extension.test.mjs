@@ -134,6 +134,14 @@ test('chosen local Markdown design is registered and its open command uses that 
   assert.equal(seen.opened.at(-1).fsPath, design);
   assert.equal(await fs.readFile(design, 'utf8'), '# MY DESIGN');
 });
+test('opening a document uses validated catalog errors instead of parser details', async t => {
+  const { root, commands, seen } = await fixture(t);
+  await applySetup(await planSetup({ root, templateRoot: kitRoot }));
+  await fs.writeFile(path.join(root, 'project-context/catalog.json'), '{broken');
+  const result = await commands.get('contextkit.openGlossary')();
+  assert.match(result.error, /完了できませんでした/);
+  assert.equal(seen.errors.at(-1), 'Context Kitの処理を完了できませんでした。設定と対象ファイルを確認してください。');
+});
 test('workspace removal stops the endpoint and trust loss blocks requests even before host reload', async t => {
   const { chat, vscode, seen, foldersChanged } = await fixture(t); await chat('初期設定');
   const [definition] = await seen.provider.provideMcpServerDefinitions();

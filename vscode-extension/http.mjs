@@ -15,6 +15,10 @@ export async function startLocalServer(handle) {
     if (req.url !== '/mcp') { respond(res, 404, { error: 'Not found' }); req.resume(); return; }
     if (req.method !== 'POST') { res.setHeader('Allow', 'POST'); respond(res, 405, { error: 'Stateless JSON POST only; no standalone SSE stream' }); req.resume(); return; }
     if (String(req.headers['content-type'] || '').split(';', 1)[0].trim().toLowerCase() !== 'application/json') { respond(res, 415, { error: 'application/json required' }); req.resume(); return; }
+    const declaredLength = Number(req.headers['content-length']);
+    if (Number.isFinite(declaredLength) && declaredLength > MAX_BYTES) {
+      respond(res, 413, { error: 'Request too large' }); req.destroy(); return;
+    }
     let size = 0, oversized = false; const chunks = [];
     try {
       for await (const chunk of req) {
@@ -22,7 +26,7 @@ export async function startLocalServer(handle) {
         if (size > MAX_BYTES) oversized = true;
         if (!oversized) chunks.push(chunk);
       }
-      if (oversized) { respond(res, 413, { error: 'Request too large' }); return; }
+      if (oversized) { respond(res, 413, { error: 'Request too large' }); req.destroy(); return; }
       let request;
       try { request = JSON.parse(Buffer.concat(chunks).toString('utf8')); }
       catch { respond(res, 400, { jsonrpc: '2.0', id: null, error: { code: -32700, message: 'Parse error' } }); return; }
