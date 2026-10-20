@@ -22,6 +22,7 @@ try {
     const { options: o, positionals: p } = parseArgs(rest);
     if (command === 'config') {
       if (p.length) throw new Error('config takes no positional arguments');
+      await openKit(o);
       const server = { command: process.execPath, args: [fileURLToPath(new URL('./server.mjs', import.meta.url)), '--root', path.resolve(o.root)] };
       if (o.config) server.args.push('--config', path.resolve(o.config));
       if (o.format && !['vscode', 'portable'].includes(o.format)) throw new Error('format must be vscode or portable');

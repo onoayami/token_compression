@@ -47,14 +47,17 @@ test('CLI unsupported files and malformed flags have nonzero exit status', async
   await assert.rejects(() => call(['config', '--unknown', 'yes']), e => e.code === 1);
   await assert.rejects(() => call(['config', '--format', 'other']), e => e.code === 1);
 });
-test('custom configuration is explicit and validated', async t => {
+test('config validates the root and configuration without creating a cache', async t => {
   const root = await rootFor(t);
   const config = path.join(root, 'settings.json');
   await fs.writeFile(config, JSON.stringify({ extraBlockedPaths: ['private'] }));
   const out = JSON.parse((await call(['config', '--root', root, '--config', config])).stdout);
   assert.deepEqual(out.servers['context-kit'].args.slice(-2), ['--config', config]);
+  assert.deepEqual(await fs.readdir(root), ['settings.json']);
   await fs.writeFile(config, JSON.stringify({ nonsense: true }));
-  await assert.rejects(() => call(['stats', '--root', root, '--config', config]), /Unknown config/);
+  await assert.rejects(() => call(['config', '--root', root, '--config', config]), e => e.code === 1 && /Unknown config/.test(e.stderr));
+  await assert.rejects(() => call(['config', '--root', path.join(root, 'missing')]), e => e.code === 1);
+  await assert.rejects(() => call(['config', '--config', path.join(root, 'missing.json')]), e => e.code === 1);
 });
 test('handoff workflow includes source identity, unverified status and manual new-chat boundary', async () => {
   const save = await fs.readFile(new URL('../integration/prompts/context-handoff-save.prompt.md', import.meta.url), 'utf8');
