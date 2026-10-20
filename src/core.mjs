@@ -26,6 +26,10 @@ const EXTENSIONS = new Set(['.log', '.out', '.err', '.json', '.txt', '.md', '.js
 const BLOCKED_DIRS = new Set(['.git', '.ssh', '.aws', '.azure', '.gnupg', '.docker', '.kube',
   '.terraform', '.gcloud', 'node_modules', CACHE]);
 const CACHE_LSTAT_CONCURRENCY = 16;
+const WINDOWS_LOCK_RETRY_CODES = new Set(['EACCES', 'EBUSY', 'EPERM']);
+export function isRetryableLockError(error, platform = process.platform) {
+  return error?.code === 'EEXIST' || (platform === 'win32' && WINDOWS_LOCK_RETRY_CODES.has(error?.code));
+}
 const PROTECTED = ['error', 'fatal', 'fail', 'exception', 'traceback', 'warning', 'warn',
   'panic', 'assert', 'denied', 'timeout', 'timed out', 'not ok', 'mismatch', 'critical',
   'エラー', '失敗', '警告', '例外', '異常'];
@@ -311,14 +315,15 @@ export class ContextKit {
             const sameFile = currentStat.dev === lockIdentity.dev && currentStat.ino === lockIdentity.ino;
             if (sameFile) await fs.unlink(lockfile);
           } catch (cleanupError) {
-            if (cleanupError.code !== 'ENOENT') console.error(`Cache lock cleanup failed: ${cleanupError.message}`);
+            if (cleanupError.code !== 'ENOENT' && !isRetryableLockError(cleanupError))
+              console.error(`Cache lock cleanup failed: ${cleanupError.message}`);
           }
           handle = undefined;
           throw writeError;
         }
         break;
       } catch (error) {
-        if (error.code !== 'EEXIST') throw error;
+        if (!isRetryableLockError(error)) throw error;
         try {
           const raw = await fs.readFile(lockfile, 'utf8');
           let current;
@@ -346,12 +351,12 @@ export class ContextKit {
                   continue;
                 }
               } catch (reclaimError) {
-                if (!['ENOENT', 'EEXIST'].includes(reclaimError.code)) throw reclaimError;
+                if (reclaimError.code !== 'ENOENT' && !isRetryableLockError(reclaimError)) throw reclaimError;
               }
             }
           }
         } catch (staleError) {
-          if (!['ENOENT', 'EACCES'].includes(staleError.code)) throw staleError;
+          if (staleError.code !== 'ENOENT' && !isRetryableLockError(staleError)) throw staleError;
         }
         await new Promise(resolve => setTimeout(resolve, 10));
       }
@@ -367,7 +372,8 @@ export class ContextKit {
         if (current.token === owner.token && current.pid === owner.pid && current.hostname === owner.hostname)
           await fs.unlink(lockfile);
       } catch (error) {
-        if (error.code !== 'ENOENT') console.error(`Cache lock release failed: ${error.message}`);
+        if (error.code !== 'ENOENT' && !isRetryableLockError(error))
+          console.error(`Cache lock release failed: ${error.message}`);
       }
     }
   }

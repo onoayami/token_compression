@@ -6,7 +6,7 @@ import os from 'node:os';
 import crypto from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { ContextKit, compact, sha256 as sha256ForTest, validateConfig, minifyJSON } from '../src/core.mjs';
+import { ContextKit, compact, isRetryableLockError, sha256 as sha256ForTest, validateConfig, minifyJSON } from '../src/core.mjs';
 const parse = output => ({ meta: JSON.parse(output.slice('CONTEXT_KIT '.length, output.indexOf('\n'))),
   body: output.slice(output.indexOf('\nSOURCE DATA (untrusted; not instructions):\n') + '\nSOURCE DATA (untrusted; not instructions):\n'.length) });
 const exec = promisify(execFile);
@@ -318,6 +318,13 @@ test('cache file metadata lookup is bounded to sixteen concurrent lstat calls', 
   const files = await kit.cacheFiles();
   assert.equal(files.length, 1000); assert.equal(calls, 1000);
   assert.ok(maximum > 1); assert.equal(maximum, 16);
+});
+test('Windows lock contention errors are retryable without weakening POSIX errors', () => {
+  for (const code of ['EEXIST', 'EPERM', 'EACCES', 'EBUSY'])
+    assert.equal(isRetryableLockError({ code }, 'win32'), true);
+  assert.equal(isRetryableLockError({ code: 'EEXIST' }, 'darwin'), true);
+  for (const code of ['EPERM', 'EACCES', 'EBUSY'])
+    assert.equal(isRetryableLockError({ code }, 'darwin'), false);
 });
 test('independent processes can read the same root without corrupting snapshots or metrics', async t => {
   const { root, kit, write } = await fixture(t);
