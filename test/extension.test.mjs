@@ -231,7 +231,8 @@ test('failed server registration closes the server and allows a later start', as
 test('staging uses official-package layout, includes runtime/templates and excludes tests, caches and dependencies', async t => {
   const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'context-kit-stage-')); t.after(() => fs.rm(temp, { recursive: true, force: true }));
   const out = path.join(temp, 'extension');
-  const { stdout } =   await exec(process.platform === 'win32' ? 'python' : 'python3', ['scripts/stage-extension.py', '--out', out], { cwd: kitRoot });
+  const python = process.platform === 'win32' ? 'python' : 'python3';
+  const { stdout } = await exec(python, ['scripts/stage-extension.py', '--out', out], { cwd: kitRoot });
   assert.match(stdout, /Staged extension: 0\.4\.0/);
   const manifest = JSON.parse(await fs.readFile(path.join(out, 'package.json'), 'utf8'));
   assert.equal(manifest.main, './extension.cjs'); assert.ok(await fs.stat(path.join(out, manifest.main)));
@@ -241,5 +242,5 @@ test('staging uses official-package layout, includes runtime/templates and exclu
   assert.equal(manifest.contributes.chatParticipants[0].isSticky, false);
   const rootPackage = JSON.parse(await fs.readFile(path.join(kitRoot, 'package.json'), 'utf8'));
   assert.equal(manifest.version, rootPackage.version);
-  await assert.rejects(() => exec('python3', ['scripts/stage-extension.py', '--out', out], { cwd: kitRoot }), /Output exists/);
+  await assert.rejects(() => exec(python, ['scripts/stage-extension.py', '--out', out], { cwd: kitRoot }), /Output exists/);
 });
