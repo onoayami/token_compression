@@ -44,8 +44,31 @@ test('MCP tool errors do not expose absolute paths', async t => {
   assert.ok(errors.some(message => message.includes(path.join(root, 'missing.txt'))));
 });
 test('MCP only exposes allowlisted PublicError messages', () => {
-  assert.equal(publicToolError(new PublicError('BLOCKED', 'Blocked by policy')), 'BLOCKED: Blocked by policy');
+  assert.equal(publicToolError(new PublicError('BLOCKED', 'internal blocked detail')), 'BLOCKED: Path blocked by policy');
   assert.equal(publicToolError(new Error('/private/secret.txt')), 'CONTEXT_KIT_ERROR: Operation failed');
+});
+test('MCP public error codes use fixed messages without request data', async () => {
+  const requests = [
+    ['kit_read', { path: 'blocked.txt' }, new PublicError('BLOCKED', 'blocked.txt')],
+    ['kit_source', { snapshot_id: 'bad-id' }, new PublicError('INVALID_ARGUMENT', '/tmp/private.txt')],
+    ['kit_stats', {}, new PublicError('TOO_LARGE', 'limit=1024')],
+    ['kit_context', {}, new PublicError('CONTEXT_KIT_ERROR', '/Users/secret/body')],
+  ];
+  for (const [name, args, failure] of requests) {
+    const handler = createHandler({
+      read: async () => { throw failure; },
+      retrieve: async () => { throw failure; },
+      stats: async () => { throw failure; },
+      context: async () => { throw failure; },
+    });
+    await handler({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18' } });
+    const response = await handler({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name, arguments: args } });
+    const text = response.result.content[0].text;
+    assert.match(text, /^(?:BLOCKED|INVALID_ARGUMENT|TOO_LARGE|CONTEXT_KIT_ERROR): /);
+    assert.ok(!text.includes('blocked.txt'));
+    assert.ok(!text.includes('/tmp'));
+    assert.ok(!text.includes('/Users'));
+  }
 });
 test('MCP unknown methods, tools, parameters and invalid types are rejected', async t => {
   const { handle } = await setup(t); await initialize(handle);

@@ -3,6 +3,7 @@ import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { hostname } from 'node:os';
 import { ContextRegistry } from './context.mjs';
+import { PublicError } from './errors.mjs';
 
 export const DEFAULTS = Object.freeze({
   maxInputBytes: 2 * 1024 * 1024,
@@ -34,10 +35,14 @@ const within = (root, target) => {
 };
 const integer = (value, name, low, high) => {
   if (!Number.isInteger(value) || value < low || value > high)
-    throw new Error(`${name} must be an integer in ${low}..${high}`);
+    throw new PublicError('INVALID_ARGUMENT', `${name} must be an integer in ${low}..${high}`);
   return value;
 };
-const coded = (message, code) => Object.assign(new Error(message), { code });
+const coded = (message, code) => {
+  const publicCode = code === 'TOO_LARGE' ? 'TOO_LARGE' :
+    ['BLOCKED', 'INVALID_ARGUMENT'].includes(code) ? code : 'CONTEXT_KIT_ERROR';
+  return new PublicError(publicCode, message);
+};
 const nonNegativeInteger = value => Number.isInteger(value) && value >= 0;
 export function isValidMetricEvent(event) {
   if (!event || typeof event !== 'object' || !['read', 'retrieve', 'context'].includes(event.type) ||
@@ -94,7 +99,7 @@ export function minifyJSON(text) {
 }
 
 export function compact(text, kind, mode, c = validateConfig()) {
-  if (!['safe', 'preview'].includes(mode)) throw new Error('mode must be safe or preview');
+  if (!['safe', 'preview'].includes(mode)) throw new PublicError('INVALID_ARGUMENT', 'mode must be safe or preview');
   const base = { body: text, method: 'unchanged', lossy: false, omittedLines: 0, foldedLines: 0 };
   if (kind === 'json') {
     try {
@@ -153,7 +158,7 @@ async function limitedRead(filename, limit) {
   try {
     const before = await handle.stat();
     if (!before.isFile()) throw coded('Expected a regular file', 'READ_FAILED');
-    if (before.size > limit) throw coded(`File exceeds byte limit ${limit}`, 'TOO_LARGE');
+    if (before.size > limit) throw new PublicError('TOO_LARGE', `File exceeds byte limit ${limit}`);
     const buffer = Buffer.alloc(Math.min(limit + 1, before.size + 1));
     let n = 0;
     while (n < buffer.length) {
@@ -161,14 +166,14 @@ async function limitedRead(filename, limit) {
       if (!r.bytesRead) break;
       n += r.bytesRead;
     }
-    if (n > limit) throw coded(`File exceeds byte limit ${limit}`, 'TOO_LARGE');
+    if (n > limit) throw new PublicError('TOO_LARGE', `File exceeds byte limit ${limit}`);
     const after = await handle.stat();
     if (n !== before.size || after.size !== before.size || after.mtimeMs !== before.mtimeMs)
       throw coded('File changed while being read; retry with a stable source', 'READ_FAILED');
     let text;
     try { text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(buffer.subarray(0, n)); }
     catch { throw coded('Invalid UTF-8 content', 'INVALID_UTF8'); }
-    if (text.includes('\0')) throw coded('Binary/NUL content is not supported', 'BINARY');
+    if (text.includes('\0')) throw new PublicError('CONTEXT_KIT_ERROR', 'Binary/NUL content is not supported');
     return text;
   } finally { await handle.close(); }
 }
@@ -187,26 +192,27 @@ export class ContextKit {
 
   checkRelative(relative) {
     const segments = relative.split(path.sep).map(s => s.toLowerCase());
-    if (segments.some(s => BLOCKED_DIRS.has(s))) throw new Error('Blocked directory');
+    if (segments.some(s => BLOCKED_DIRS.has(s))) throw new PublicError('BLOCKED', 'Blocked directory');
     const name = (segments.at(-1) || '').toLowerCase();
     if (/^\.env(?:\.|$)/.test(name) || ['.npmrc', '.pypirc', '.netrc', 'credentials', 'credentials.json',
       'id_rsa', 'id_ed25519', 'id_ecdsa'].includes(name) || /\.(?:pem|key|p12|pfx|der)$/.test(name) ||
-      /^secrets?(?:\.|$)/.test(name)) throw new Error('Potential credential file is blocked');
+      /^secrets?(?:\.|$)/.test(name)) throw new PublicError('BLOCKED', 'Potential credential file is blocked');
     const normalized = segments.join('/');
     if (this.config.extraBlockedPaths.some(p => {
       const prefix = p.replaceAll('\\', '/').replace(/\/$/, '').toLowerCase();
       return normalized === prefix || normalized.startsWith(`${prefix}/`);
-    })) throw new Error('Path blocked by configuration');
-    if (!EXTENSIONS.has(path.extname(name))) throw new Error('Unsupported extension; code files are not compressed by this starter');
+    })) throw new PublicError('BLOCKED', 'Path blocked by configuration');
+    if (!EXTENSIONS.has(path.extname(name))) throw new PublicError('BLOCKED', 'Unsupported extension; code files are not compressed by this starter');
   }
   async sourcePath(requested) {
-    if (typeof requested !== 'string' || !requested || requested.length > 4096 || requested.includes('\0')) throw new Error('Invalid path');
+    if (typeof requested !== 'string' || !requested || requested.length > 4096 || requested.includes('\0'))
+      throw new PublicError('INVALID_ARGUMENT', 'Invalid path');
     const candidate = path.resolve(this.root, requested);
-    if (!within(this.root, candidate)) throw new Error('Path is outside workspace');
+    if (!within(this.root, candidate)) throw new PublicError('BLOCKED', 'Path is outside workspace');
     try { this.checkRelative(path.relative(this.root, candidate)); }
     catch (error) { if (!error.code) error.code = 'BLOCKED'; throw error; }
     const actual = await fs.realpath(candidate);
-    if (!within(this.realRoot, actual)) throw coded('Symlink resolves outside workspace', 'BLOCKED');
+    if (!within(this.realRoot, actual)) throw new PublicError('BLOCKED', 'Symlink resolves outside workspace');
     try { this.checkRelative(path.relative(this.realRoot, actual)); }
     catch (error) { if (!error.code) error.code = 'BLOCKED'; throw error; }
     return candidate;
@@ -219,11 +225,12 @@ export class ContextKit {
     const { action = 'list', id, offset = 0, limit = 10 } = options;
     const registry = new ContextRegistry(this);
     if (action === 'read') {
-      if (Object.hasOwn(options, 'offset') || Object.hasOwn(options, 'limit')) throw new Error('Context read does not accept list pagination');
-      if (typeof id !== 'string' || !id) throw new Error('Context read requires a document id');
+      if (Object.hasOwn(options, 'offset') || Object.hasOwn(options, 'limit'))
+        throw new PublicError('INVALID_ARGUMENT', 'Context read does not accept list pagination');
+      if (typeof id !== 'string' || !id) throw new PublicError('INVALID_ARGUMENT', 'Context read requires a document id');
       return registry.readById(id);
     }
-    if (action !== 'list' || id !== undefined) throw new Error('Context list does not accept an id');
+    if (action !== 'list' || id !== undefined) throw new PublicError('INVALID_ARGUMENT', 'Context list does not accept an id');
     const output = JSON.stringify(await registry.overview({ offset, limit }));
     await this.record({ type: 'context', responseBytes: bytes(output) });
     return output;
@@ -344,15 +351,16 @@ export class ContextKit {
     });
   }
   async load(id) {
-    if (typeof id !== 'string' || !ID.test(id)) throw new Error('Invalid snapshot ID');
+    if (typeof id !== 'string' || !ID.test(id)) throw new PublicError('INVALID_ARGUMENT', 'Invalid snapshot ID');
     await this.ensureCache();
     const text = await limitedRead(path.join(this.cache, `${id}.json`), this.config.maxCacheBytes);
     const data = JSON.parse(text);
     if (data.version !== 1 || data.id !== id || typeof data.text !== 'string' ||
         typeof data.source !== 'string' || typeof data.sha256 !== 'string' || !HASH.test(data.sha256))
-      throw new Error('Snapshot integrity check failed');
+      throw new PublicError('CONTEXT_KIT_ERROR', 'Snapshot integrity check failed');
     const age = Date.now() - Date.parse(data.createdAt);
-    if (!Number.isFinite(age) || age < -60000 || age > this.config.cacheTTLHours * 3600000) throw new Error('Snapshot expired or invalid; reacquire and recheck the source');
+    if (!Number.isFinite(age) || age < -60000 || age > this.config.cacheTTLHours * 3600000)
+      throw new PublicError('CONTEXT_KIT_ERROR', 'Snapshot expired or invalid; reacquire and recheck the source');
     return data;
   }
   async record(event) {
@@ -374,7 +382,7 @@ export class ContextKit {
     }
   }
   async read(requested, mode = 'safe') {
-    if (!['safe', 'preview'].includes(mode)) throw new Error('mode must be safe or preview');
+    if (!['safe', 'preview'].includes(mode)) throw new PublicError('INVALID_ARGUMENT', 'mode must be safe or preview');
     const filename = await this.sourcePath(requested);
     const text = await limitedRead(filename, this.config.maxInputBytes);
     const source = await this.save(text, path.relative(this.root, filename));
@@ -415,8 +423,9 @@ export class ContextKit {
     let integrityStatus = 'self-reported-only';
     if (expected_sha256 !== undefined) {
       if (typeof expected_sha256 !== 'string' || !HASH.test(expected_sha256))
-        throw new Error('expected_sha256 must be a 64-character hexadecimal SHA-256');
-      if (expected_sha256.toLowerCase() !== sha256(source.text)) throw new Error('Expected SHA-256 does not match snapshot');
+        throw new PublicError('INVALID_ARGUMENT', 'expected_sha256 must be a 64-character hexadecimal SHA-256');
+      if (expected_sha256.toLowerCase() !== sha256(source.text))
+        throw new PublicError('CONTEXT_KIT_ERROR', 'Expected SHA-256 does not match snapshot');
       integrityStatus = 'matched-external-expected-hash';
     }
     const lines = lineParts(source.text);
@@ -428,7 +437,8 @@ export class ContextKit {
     const selected = lines.slice(start_line - 1, end_line).join('');
     const points = chars(selected);
     integer(offset, 'offset', 0, points.length);
-    if (quote !== undefined && (typeof quote !== 'string' || !quote || chars(quote).length > 1000)) throw new Error('quote must contain 1..1000 characters');
+    if (quote !== undefined && (typeof quote !== 'string' || !quote || chars(quote).length > 1000))
+      throw new PublicError('INVALID_ARGUMENT', 'quote must contain 1..1000 characters');
     const body = points.slice(offset, offset + limit).join('');
     const registration = await this.contextRegistration(source.source);
     const sourceOffset = chars(lines.slice(0, start_line - 1).join('')).length + offset;

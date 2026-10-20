@@ -1,5 +1,6 @@
 import { pathToFileURL } from 'node:url';
 import { parseArgs, openKit } from './options.mjs';
+import { PublicError } from './errors.mjs';
 
 export const TOOLS = [
   {
@@ -41,23 +42,15 @@ TOOLS.push({
 });
 const VERSIONS = ['2025-06-18', '2025-03-26', '2024-11-05'];
 const error = (id, code, message) => ({ jsonrpc: '2.0', id, error: { code, message } });
-const PUBLIC_CODES = new Set(['FILE_NOT_FOUND', 'ACCESS_DENIED', 'BLOCKED', 'TOO_LARGE', 'INVALID_ARGUMENT', 'CONTEXT_KIT_ERROR']);
-export class PublicError extends Error {
-  constructor(code, safeMessage) {
-    if (!PUBLIC_CODES.has(code) || typeof safeMessage !== 'string' || !safeMessage) throw new Error('Invalid public error');
-    super(safeMessage); this.name = 'PublicError'; this.publicCode = code; this.publicMessage = safeMessage;
-  }
-}
+export { PublicError };
 export function publicToolError(error) {
   const code = error instanceof PublicError ? error.publicCode :
     error?.code === 'ENOENT' ? 'FILE_NOT_FOUND' :
     ['EACCES', 'EPERM'].includes(error?.code) ? 'ACCESS_DENIED' :
     'CONTEXT_KIT_ERROR';
-  const message = error instanceof PublicError ? error.publicMessage : ({
-    FILE_NOT_FOUND: 'File not found',
-    ACCESS_DENIED: 'Access denied',
-    CONTEXT_KIT_ERROR: 'Operation failed',
-  }[code] ?? 'Operation failed');
+  const message = error instanceof PublicError ? error.publicMessage :
+    code === 'FILE_NOT_FOUND' ? 'File not found' :
+    code === 'ACCESS_DENIED' ? 'Access denied' : 'Operation failed';
   return `${code}: ${message}`;
 }
 export function createHandler(kit) {
