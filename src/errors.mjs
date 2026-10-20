@@ -1,5 +1,6 @@
 export const PUBLIC_CODES = new Set([
-  'FILE_NOT_FOUND', 'ACCESS_DENIED', 'BLOCKED', 'TOO_LARGE', 'INVALID_ARGUMENT', 'CONTEXT_KIT_ERROR',
+  'FILE_NOT_FOUND', 'ACCESS_DENIED', 'BLOCKED', 'TOO_LARGE', 'INVALID_ARGUMENT',
+  'UNSUPPORTED_ENCODING', 'SOURCE_CHANGED', 'CONTEXT_KIT_ERROR',
 ]);
 
 const SAFE_MESSAGES = Object.freeze({
@@ -8,6 +9,8 @@ const SAFE_MESSAGES = Object.freeze({
   BLOCKED: 'Path blocked by policy',
   TOO_LARGE: 'Input exceeds configured size limit',
   INVALID_ARGUMENT: 'Invalid argument',
+  UNSUPPORTED_ENCODING: 'Input is not valid UTF-8. Convert it to UTF-8 and retry.',
+  SOURCE_CHANGED: 'The file changed while it was being read. Copy it to a temporary file and retry.',
   CONTEXT_KIT_ERROR: 'Operation failed',
 });
 

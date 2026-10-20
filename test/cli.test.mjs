@@ -19,6 +19,8 @@ test('CLI accepts equals syntax for values beginning with option markers', () =>
   assert.deepEqual(parseArgs(['--quote=--x'], new Set(['quote'])).options.quote, '--x');
   assert.deepEqual(parseArgs(['--quote', 'text'], new Set(['quote'])).options.quote, 'text');
   assert.throws(() => parseArgs(['--quote', '--x'], new Set(['quote'])), /use --quote=VALUE/);
+  assert.throws(() => parseArgs(['--offset', ''], new Set(['offset'])), /numeric/);
+  assert.throws(() => parseArgs(['--offset', '1', '--offset=2'], new Set(['offset'])), /Duplicate/);
 });
 test('CLI config prints a VS Code stdio setup without changing workspace files', async t => {
   const root = await rootFor(t); await fs.writeFile(path.join(root, 'keep.txt'), 'keep');
