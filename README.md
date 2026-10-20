@@ -6,7 +6,7 @@ VS Code の GitHub Copilot を想定した小さなスターターです。Headr
 ## 非エンジニア向け：かんたん導入版
 
 **VS Code用の拡張ファイル（VSIX）を入れて、チャットに `@contextkit 初期設定` と入力する方式を追加しました。**
-**現在はソース実装まで反映済みで、VSIXは未公開です。自動配布設定の追加がGitHub接続の権限エラーで止まっています。** 管理者向けの [初回公開手順](docs/FIRST-RELEASE.md) と設定テンプレートを用意しました。以下はVSIX公開後の導入方法です。
+**今回の実装作業時点では、ソース反映済み・VSIX未公開です。自動配布設定の追加がGitHub接続の権限エラーで停止しました。** 公開状況はReleasesで確認してください。この説明は自動更新されません。 管理者向けの [初回公開手順](docs/FIRST-RELEASE.md) と設定テンプレートを用意しました。以下はVSIX公開後の導入方法です。
 
 Marketplaceには未公開です。配布ファイルは [GitHub Releases](https://github.com/onoayami/token_compression/releases/latest) に掲載します。まだ表示されない場合、ビルド・公開は完了していません。`Source code.zip` はインストール用ファイルではありません。
 
