@@ -41,6 +41,17 @@ TOOLS.push({
 });
 const VERSIONS = ['2025-06-18', '2025-03-26', '2024-11-05'];
 const error = (id, code, message) => ({ jsonrpc: '2.0', id, error: { code, message } });
+export function publicToolError(error) {
+  const code = error?.code === 'ENOENT' ? 'FILE_NOT_FOUND' :
+    ['EACCES', 'EPERM'].includes(error?.code) ? 'ACCESS_DENIED' :
+    error?.publicCode ?? 'CONTEXT_KIT_ERROR';
+  const message = error?.publicMessage ?? ({
+    FILE_NOT_FOUND: 'File not found',
+    ACCESS_DENIED: 'Access denied',
+    CONTEXT_KIT_ERROR: 'Operation failed',
+  }[code] ?? 'Operation failed');
+  return `${code}: ${message}`;
+}
 export function createHandler(kit) {
   let initialized = false;
   return async request => {
@@ -82,7 +93,10 @@ export function createHandler(kit) {
           params.name === 'kit_source' ? await kit.retrieve(a) :
           params.name === 'kit_context' ? await kit.context(a) : JSON.stringify(await kit.stats());
         return ok({ content: [{ type: 'text', text }] });
-      } catch (e) { return ok({ isError: true, content: [{ type: 'text', text: `Context kit error: ${e.message}` }] }); }
+      } catch (e) {
+        console.error(`Tool error: ${e?.message ?? String(e)}`);
+        return ok({ isError: true, content: [{ type: 'text', text: publicToolError(e) }] });
+      }
     }
     return error(id, -32601, 'Method not found');
   };

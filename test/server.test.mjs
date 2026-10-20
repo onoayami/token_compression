@@ -32,6 +32,17 @@ test('MCP tool reads, retrieval, and failures stay structured', async t => {
   const bad = await handle(rpc(4, 'tools/call', { name: 'kit_read', arguments: { path: '../a.txt' } }));
   assert.equal(bad.result.isError, true);
 });
+test('MCP tool errors do not expose absolute paths', async t => {
+  const { handle, root } = await setup(t); await initialize(handle);
+  const original = console.error; const errors = [];
+  console.error = message => errors.push(message);
+  t.after(() => { console.error = original; });
+  const result = await handle(rpc(5, 'tools/call', { name: 'kit_read', arguments: { path: 'missing.txt' } }));
+  const text = result.result.content[0].text;
+  assert.equal(text, 'FILE_NOT_FOUND: File not found');
+  assert.ok(!text.includes(root)); assert.ok(!text.includes(os.tmpdir()));
+  assert.ok(errors.some(message => message.includes(path.join(root, 'missing.txt'))));
+});
 test('MCP unknown methods, tools, parameters and invalid types are rejected', async t => {
   const { handle } = await setup(t); await initialize(handle);
   assert.equal((await handle(rpc(2, 'unknown'))).error.code, -32601);
