@@ -2,8 +2,10 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { hostname } from 'node:os';
+import { constants as FS_CONSTANTS } from 'node:fs';
 import { ContextRegistry } from './context.mjs';
 import { PublicError } from './errors.mjs';
+import { stripBOM } from './json.mjs';
 
 export const DEFAULTS = Object.freeze({
   maxInputBytes: 2 * 1024 * 1024,
@@ -29,6 +31,16 @@ const PROTECTED = ['error', 'fatal', 'fail', 'exception', 'traceback', 'warning'
 export const sha256 = text => createHash('sha256').update(text, 'utf8').digest('hex');
 const bytes = text => Buffer.byteLength(text, 'utf8');
 const chars = text => Array.from(text);
+const pointLength = text => { let count = 0; for (const _ of text) count++; return count; };
+const slicePoints = (text, start, limit) => {
+  let index = 0, result = '';
+  for (const point of text) {
+    if (index >= start && index < start + limit) result += point;
+    if (index >= start + limit) break;
+    index++;
+  }
+  return result;
+};
 const lineParts = text => text.match(/[^\n]*\n|[^\n]+$/g) || [''];
 const within = (root, target) => {
   const relative = path.relative(root, target);
@@ -85,7 +97,7 @@ export function validateConfig(input = {}) {
 // Parsing validates JSON, but serialization is NOT used: large numeric literals,
 // duplicate keys, escapes and string whitespace are preserved verbatim.
 export function minifyJSON(text) {
-  JSON.parse(text);
+  JSON.parse(stripBOM(text));
   let inside = false, escaped = false; const result = [];
   for (const ch of text) {
     if (inside) {
@@ -117,7 +129,8 @@ export function compact(text, kind, mode, c = validateConfig()) {
   if (mode === 'preview') {
     const keep = new Set();
     for (let i = 0; i < lines.length; i++) {
-      if (i < c.previewHead || i >= lines.length - c.previewTail || protectedLine(i)) {
+      const contentEnd = lines.at(-1) === '' ? lines.length - 1 : lines.length;
+      if (i < c.previewHead || i >= contentEnd - c.previewTail || protectedLine(i)) {
         for (let k = Math.max(0, i - c.contextLines); k <= Math.min(lines.length - 1, i + c.contextLines); k++) keep.add(k);
       }
     }
@@ -152,14 +165,21 @@ export function compact(text, kind, mode, c = validateConfig()) {
     lossy: omittedLines > 0, omittedLines, foldedLines };
 }
 
-async function limitedRead(filename, limit) {
+async function limitedRead(filename, limit, hooks = {}) {
   const info = await fs.lstat(filename);
   if (!info.isFile() || info.isSymbolicLink()) throw coded('Expected a regular, non-symlink file', 'READ_FAILED');
-  const handle = await fs.open(filename, 'r');
+  if (info.nlink > 1) throw new PublicError('BLOCKED', '複数のリンクを持つファイルは読めません');
+  await hooks.beforeOpen?.(filename);
+  const flags = FS_CONSTANTS.O_RDONLY | (FS_CONSTANTS.O_NOFOLLOW ?? 0);
+  const handle = await fs.open(filename, flags);
   try {
     const before = await handle.stat();
     if (!before.isFile()) throw coded('Expected a regular file', 'READ_FAILED');
-    if (before.size > limit) throw new PublicError('TOO_LARGE', `File exceeds byte limit ${limit}`);
+    // Compare the opened handle with the pre-open identity to reject replacement races.
+    if (info.dev !== before.dev || info.ino !== before.ino)
+      throw new PublicError('SOURCE_CHANGED', 'The file changed while it was being opened. Copy it to a temporary file and retry.');
+    if (before.nlink > 1) throw new PublicError('BLOCKED', '複数のリンクを持つファイルは読めません');
+    if (before.size > limit) throw new PublicError('TOO_LARGE', 'Input exceeds the configured limit (maxInputBytes). Copy the log to a temporary file or adjust maxInputBytes in docs/CUSTOMIZE.md.');
     const buffer = Buffer.alloc(Math.min(limit + 1, before.size + 1));
     let n = 0;
     while (n < buffer.length) {
@@ -167,14 +187,14 @@ async function limitedRead(filename, limit) {
       if (!r.bytesRead) break;
       n += r.bytesRead;
     }
-    if (n > limit) throw new PublicError('TOO_LARGE', `File exceeds byte limit ${limit}`);
+    if (n > limit) throw new PublicError('TOO_LARGE', 'Input exceeds the configured limit (maxInputBytes). Copy the log to a temporary file or adjust maxInputBytes in docs/CUSTOMIZE.md.');
     const after = await handle.stat();
     if (n !== before.size || after.size !== before.size || after.mtimeMs !== before.mtimeMs)
-      throw coded('File changed while being read; retry with a stable source', 'READ_FAILED');
+      throw new PublicError('SOURCE_CHANGED', 'The file changed while it was being read. Copy it to a temporary file and retry.');
     let text;
     try { text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(buffer.subarray(0, n)); }
-    catch { throw coded('Invalid UTF-8 content', 'INVALID_UTF8'); }
-    if (text.includes('\0')) throw new PublicError('CONTEXT_KIT_ERROR', 'Binary/NUL content is not supported');
+    catch { throw new PublicError('UNSUPPORTED_ENCODING', 'UTF-8以外の可能性があります。UTF-8に変換して再実行してください。'); }
+    if (text.includes('\0')) throw new PublicError('UNSUPPORTED_ENCODING', 'NUL/Binary content is not supported. ログを一時コピーしてから読むか、UTF-8のテキストを指定してください。');
     return text;
   } finally { await handle.close(); }
 }
@@ -191,6 +211,7 @@ export class ContextKit {
     this.snapshotIndex = new Map();
     this.lockWriter = (handle, owner) => handle.writeFile(JSON.stringify(owner));
     this.lstat = fs.lstat;
+    this.readHooks = {};
   }
 
   checkRelative(relative) {
@@ -198,7 +219,11 @@ export class ContextKit {
     if (segments.some(s => BLOCKED_DIRS.has(s))) throw new PublicError('BLOCKED', 'Blocked directory');
     const name = (segments.at(-1) || '').toLowerCase();
     if (/^\.env(?:\.|$)/.test(name) || ['.npmrc', '.pypirc', '.netrc', 'credentials', 'credentials.json',
-      'id_rsa', 'id_ed25519', 'id_ecdsa'].includes(name) || /\.(?:pem|key|p12|pfx|der)$/.test(name) ||
+      'id_rsa', 'id_ed25519', 'id_ecdsa', 'id_dsa', 'application_default_credentials.json'].includes(name) ||
+      ['.docker', '.kube', '.terraform', '.gcloud'].includes(name) ||
+      /^service-account[^/]*\.json$/.test(name) || /^[^/]*-adminsdk-[^/]*\.json$/.test(name) ||
+      /^client_secret[^/]*\.json$/.test(name) || /\.(?:tfstate|tfstate\..+)$/.test(name) ||
+      /\.(?:pem|key|p12|pfx|der)$/.test(name) ||
       /^secrets?(?:\.|$)/.test(name)) throw new PublicError('BLOCKED', 'Potential credential file is blocked');
     const normalized = segments.join('/');
     if (this.config.extraBlockedPaths.some(p => {
@@ -233,7 +258,8 @@ export class ContextKit {
       if (typeof id !== 'string' || !id) throw new PublicError('INVALID_ARGUMENT', 'Context read requires a document id');
       return registry.readById(id);
     }
-    if (action !== 'list' || id !== undefined) throw new PublicError('INVALID_ARGUMENT', 'Context list does not accept an id');
+    if (action !== 'list') throw new PublicError('INVALID_ARGUMENT', 'action must be list or read');
+    if (id !== undefined) throw new PublicError('INVALID_ARGUMENT', 'Context list does not accept an id');
     const result = await registry.overview({ offset, limit });
     const provisional = JSON.stringify(result);
     const metrics = await this.tryRecord({ type: 'context', responseBytes: bytes(provisional) });
@@ -257,6 +283,10 @@ export class ContextKit {
     catch (error) { if (error.code !== 'EEXIST') throw error; }
     const info = await fs.lstat(this.cache);
     if (info.isSymbolicLink() || !info.isDirectory()) throw new Error('Cache must be a non-symlink directory');
+    if ((info.mode & 0o777) !== 0o700) console.error('Context cache permissions are broader than 0700');
+    const ignore = path.join(this.cache, '.gitignore');
+    try { await fs.writeFile(ignore, '*\n', { flag: 'wx', mode: 0o600 }); }
+    catch (error) { if (error.code !== 'EEXIST') throw error; }
   }
   async withCacheLock(fn) {
     await this.ensureCache();
@@ -340,6 +370,7 @@ export class ContextKit {
     await this.ensureCache();
     const files = [];
     const names = (await fs.readdir(this.cache)).filter(name => name.endsWith('.json') && ID.test(name.slice(0, -5)));
+    // Bound metadata probes so a large cache does not create one promise per file.
     const workers = Array.from({ length: Math.min(CACHE_LSTAT_CONCURRENCY, names.length) }, async () => {
       while (names.length) {
         const name = names.pop();
@@ -391,7 +422,7 @@ export class ContextKit {
     if (typeof id !== 'string' || !ID.test(id)) throw new PublicError('INVALID_ARGUMENT', 'Invalid snapshot ID');
     await this.ensureCache();
     const text = await limitedRead(path.join(this.cache, `${id}.json`), this.config.maxCacheBytes);
-    const data = JSON.parse(text);
+    const data = JSON.parse(stripBOM(text));
     if (data.version !== 1 || data.id !== id || typeof data.text !== 'string' ||
         typeof data.source !== 'string' || typeof data.sha256 !== 'string' || !HASH.test(data.sha256))
       throw new PublicError('CONTEXT_KIT_ERROR', 'Snapshot integrity check failed');
@@ -420,12 +451,12 @@ export class ContextKit {
       return { recorded: false, warning: 'Metrics could not be recorded', reason: error.code ?? 'INVALID_METRICS_STORAGE' };
     }
   }
-  async read(requested, mode = 'safe') {
+  async read(requested, mode = 'safe', registrationOverride = undefined) {
     if (!['safe', 'preview'].includes(mode)) throw new PublicError('INVALID_ARGUMENT', 'mode must be safe or preview');
     const filename = await this.sourcePath(requested);
-    const text = await limitedRead(filename, this.config.maxInputBytes);
+    const text = await limitedRead(filename, this.config.maxInputBytes, this.readHooks);
     const source = await this.save(text, path.relative(this.root, filename));
-    const registration = await this.contextRegistration(source.source);
+    const registration = registrationOverride ? { doc: registrationOverride.doc } : await this.contextRegistration(source.source);
     const ext = path.extname(filename).toLowerCase();
     const kind = ext === '.json' ? 'json' : ['.log', '.out', '.err'].includes(ext) ? 'log' : 'text';
     const result = compact(text, kind, mode, this.config);
@@ -433,7 +464,7 @@ export class ContextKit {
     const originalBytes = bytes(text), compactedBytes = bytes(result.body);
     const bodyComplete = compactedCharacters <= this.config.maxOutputChars;
     const body = bodyComplete ? result.body : '';
-    const tracking = await this.trackContextOutput(source, registration, { start: 0, end: bodyComplete ? chars(text).length : 0, hasBody: bodyComplete && kind === 'text' && !result.lossy });
+    const tracking = await this.trackContextOutput(source, registration, { start: 0, end: bodyComplete ? originalCharacters : 0, hasBody: bodyComplete && kind === 'text' && !result.lossy });
     const meta = { snapshot_id: source.id, sha256: source.sha256, file: source.source,
       captured_at: source.createdAt,
       ...(registration.doc ? { context_document: new ContextRegistry(this).publicDocument(registration.doc) } : {}),
@@ -474,14 +505,15 @@ export class ContextKit {
     limit ??= this.config.maxPageChars;
     integer(limit, 'limit', 1, this.config.maxPageChars);
     const selected = lines.slice(start_line - 1, end_line).join('');
-    const points = chars(selected);
-    integer(offset, 'offset', 0, points.length);
-    if (quote !== undefined && (typeof quote !== 'string' || !quote || chars(quote).length > 1000))
+    const selectedPoints = pointLength(selected);
+    integer(offset, 'offset', 0, selectedPoints);
+    if (quote !== undefined && (typeof quote !== 'string' || !quote || pointLength(quote) > 1000))
       throw new PublicError('INVALID_ARGUMENT', 'quote must contain 1..1000 characters');
-    const body = points.slice(offset, offset + limit).join('');
+    const body = slicePoints(selected, offset, limit);
     const registration = await this.contextRegistration(source.source);
-    const sourceOffset = chars(lines.slice(0, start_line - 1).join('')).length + offset;
-    const tracking = await this.trackContextOutput(source, registration, { start: sourceOffset, end: sourceOffset + chars(body).length, hasBody: true });
+    const sourceOffset = pointLength(lines.slice(0, start_line - 1).join('')) + offset;
+    const bodyPoints = pointLength(body);
+    const tracking = await this.trackContextOutput(source, registration, { start: sourceOffset, end: sourceOffset + bodyPoints, hasBody: true });
     let currentSourceStatus = 'unavailable';
     let currentSourceReason;
     try {
@@ -491,15 +523,16 @@ export class ContextKit {
       currentSourceReason = error.code === 'ENOENT' ? 'missing' :
         ['EACCES', 'EPERM'].includes(error.code) ? 'access_denied' :
         error.code === 'BLOCKED' ? 'blocked_by_policy' :
-        error.code === 'TOO_LARGE' ? 'too_large' : 'read_failed';
+        error.code === 'TOO_LARGE' ? 'too_large' :
+        error.code === 'SOURCE_CHANGED' ? 'changed_during_read' : 'read_failed';
     }
     const meta = { snapshot_id: source.id, sha256: source.sha256, file: source.source,
       captured_at: source.createdAt,
       ...(registration.doc ? { context_document: new ContextRegistry(this).publicDocument(registration.doc) } : {}),
       ...tracking, original_lines: lines.length, start_line, end_line,
       character_offset_in_selected_lines: offset,
-      next_offset: offset + chars(body).length < points.length ? offset + chars(body).length : null,
-      page_complete: offset === 0 && chars(body).length === points.length,
+      next_offset: offset + bodyPoints < selectedPoints ? offset + bodyPoints : null,
+      page_complete: offset === 0 && bodyPoints === selectedPoints,
       integrity_status: integrityStatus,
       current_source_status: currentSourceStatus,
       ...(currentSourceStatus === 'unavailable' ? { current_source_reason: currentSourceReason } : {}),
@@ -515,7 +548,7 @@ export class ContextKit {
     await this.ensureCache();
     let events = [], invalidMetricRows = 0;
     try {
-      const text = (await limitedRead(path.join(this.cache, 'metrics.jsonl'), 2 * 1024 * 1024)).trim();
+      const text = stripBOM((await limitedRead(path.join(this.cache, 'metrics.jsonl'), 2 * 1024 * 1024)).trim());
       for (const line of text ? text.split('\n') : []) {
         try {
           const event = JSON.parse(line);

@@ -87,6 +87,15 @@ test('broken output ledger reports a fixed tracking error without filesystem det
   assert.equal(JSON.stringify(result).includes(root), false);
   assert.equal(JSON.stringify(result).includes('SyntaxError'), false);
 });
+test('BOM catalog is accepted and malformed JSON gives fixed guidance', async t => {
+  const { root, kit } = await setup(t);
+  const catalogPath = path.join(root, 'project-context/catalog.json');
+  const catalog = { schemaVersion: 1, documents: [entry()] };
+  await fs.writeFile(catalogPath, `\ufeff${JSON.stringify(catalog)}`);
+  assert.equal((await kit.context({ action: 'list' })).includes('glossary'), true);
+  await fs.writeFile(catalogPath, '{broken');
+  await assert.rejects(() => kit.context({ action: 'list' }), /BOM|trailing commas|UTF-8/);
+});
 test('independent processes preserve distinct context ledger records', async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'context-kit-process-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));

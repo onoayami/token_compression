@@ -1,11 +1,12 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
+import { stripBOM } from './json.mjs';
 
 export const CATALOG_PATH = 'project-context/catalog.json';
 const LEDGER = 'context-reads.json';
 const hash = value => createHash('sha256').update(value, 'utf8').digest('hex');
-const points = text => Array.from(text).length;
+const points = text => { let count = 0; for (const _ of text) count++; return count; };
 const byteLength = text => Buffer.byteLength(text, 'utf8');
 const STATUS_LABEL = { official: '正式（利用者の宣言）', draft: '検討中', archived: '過去版' };
 const STATE_LABEL = { registered: '登録のみ・本文未出力', pointer_only: '原文の場所のみ出力・本文未出力',
@@ -62,15 +63,15 @@ export class ContextRegistry {
     let text;
     try { ({ text } = await this.kit.localText(CATALOG_PATH, 65536)); }
     catch (e) { if (e.code === 'ENOENT') return null; throw e; }
-    try { return validateCatalog(JSON.parse(text)); }
-    catch (e) { if (e.message.startsWith('Context catalog:')) throw e; fail('catalog.json is not valid JSON'); }
+    try { return validateCatalog(JSON.parse(stripBOM(text))); }
+    catch (e) { if (e.message.startsWith('Context catalog:')) throw e; fail('catalog.json is not valid JSON; check BOM, trailing commas and UTF-8 encoding'); }
   }
   publicDocument(doc) {
     return { ...doc, status_label: STATUS_LABEL[doc.status], metadata_sha256: documentFingerprint(doc),
       authority_notice: 'Status is declared by the user, not verified truth. Newer modification time does not resolve conflicts.' };
   }
-  async registration(sourceRelative) {
-    const catalog = await this.catalog();
+  async registration(sourceRelative, providedCatalog) {
+    const catalog = providedCatalog ?? await this.catalog();
     if (!catalog) return null;
     const sourceActual = await fs.realpath(path.resolve(this.kit.root, sourceRelative));
     const matches = [];
@@ -93,7 +94,9 @@ export class ContextRegistry {
       text = await fs.readFile(filename, 'utf8');
       if (byteLength(text) > 1024 * 1024) throw new Error('Context ledger exceeds size limit');
     } catch (e) { if (e.code === 'ENOENT') return { version: 1, records: [] }; throw e; }
-    const data = JSON.parse(text), ids = new Set();
+    let data;
+    try { data = JSON.parse(stripBOM(text)); } catch { throw new Error('Invalid context output ledger; run purge and retry'); }
+    const ids = new Set();
     if (!data || data.version !== 1 || !Array.isArray(data.records) || data.records.length > 50) throw new Error('Invalid context output ledger');
     for (const r of data.records) {
       if (!r || typeof r.docId !== 'string' || !ID.test(r.docId) || ids.has(r.docId) || typeof r.sourcePath !== 'string' ||
@@ -118,10 +121,14 @@ export class ContextRegistry {
     try {
       await fs.writeFile(temporary, serialized, { flag: 'wx', mode: 0o600 });
       await fs.rename(temporary, filename);
-    } finally { await fs.unlink(temporary).catch(e => { if (e.code !== 'ENOENT') throw e; }); }
+    } finally {
+      try { await fs.unlink(temporary); }
+      catch (e) { if (e.code !== 'ENOENT') console.error(`Context ledger temporary cleanup failed: ${e.message}`); }
+    }
   }
   async noteOutput(source, doc, { start = 0, end = 0, hasBody = false } = {}) {
     if (!doc) return;
+    // Read, merge, and replace the ledger under one cache lock.
     await this.kit.withCacheLock(async () => {
       const ledger = await this.readLedger(), total = points(source.text), fingerprint = documentFingerprint(doc);
       const old = ledger.records.find(r => r.docId === doc.id);
@@ -193,10 +200,10 @@ export class ContextRegistry {
     if (!catalog) fail('no catalog is configured');
     const doc = catalog.documents.find(d => d.id === id);
     if (!doc) fail('unknown document id');
-    const actual = await this.kit.sourcePath(doc.path);
-    const registration = await this.registration(path.relative(this.kit.root, actual));
+    await this.kit.sourcePath(doc.path);
+    const registration = await this.registration(doc.path, catalog);
     if (!registration || registration.id !== id) fail('ambiguous or changed registration');
-    return this.kit.read(doc.path, 'safe');
+    return this.kit.read(doc.path, 'safe', { doc: registration });
   }
 }
 

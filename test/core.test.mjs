@@ -44,6 +44,12 @@ test('preview explicitly marks omissions and retains critical context', () => {
   assert.match(out.body, /ERROR actual failure/); assert.match(out.body, /record number 59/);
   assert.match(out.body, /omitted original lines/);
 });
+test('preview tail counts content lines before a trailing newline', () => {
+  const out = compact('line 1\nline 2\nline 3\nline 4\n', 'log', 'preview', { ...validateConfig(), previewHead: 1, previewTail: 2 });
+  assert.match(out.body, /line 2/);
+  assert.match(out.body, /line 3/);
+  assert.match(out.body, /line 4/);
+});
 test('Markdown/text is not summarized even in preview mode', () => {
   const text = 'Do not delete exceptions.\n'.repeat(100);
   assert.equal(compact(text, 'text', 'preview').body, text);
@@ -150,6 +156,45 @@ test('invalid UTF-8, binary and oversized files are rejected', async t => {
   await write('large.txt', 'x'.repeat(1025)); await assert.rejects(() => kit.read('large.txt'), /limit/);
   await fs.writeFile(path.join(root, 'binary.txt'), Buffer.from([0xff, 0xfe])); await assert.rejects(() => kit.read('binary.txt'));
   await write('nul.txt', 'a\0b'); await assert.rejects(() => kit.read('nul.txt'), /Binary/);
+});
+test('BOM JSON is parsed without changing source text or hash', async t => {
+  const { root, kit, write } = await fixture(t);
+  await write('bom.json', '\ufeff{"long":  1}\n');
+  const output = await kit.read('bom.json');
+  const { meta, body } = parse(output);
+  assert.equal(body, '\ufeff{"long":1}');
+  assert.equal(meta.sha256, sha256ForTest('\ufeff{"long":  1}\n'));
+  assert.equal(minifyJSON('\ufeff{"long":  1}'), '\ufeff{"long":1}');
+  await write('hard.json', '{"x":1}');
+  await fs.link(path.join(root, 'hard.json'), path.join(root, 'hard-copy.json'));
+  await assert.rejects(() => kit.read('hard.json'), error => error.code === 'BLOCKED');
+});
+test('secret filename patterns are blocked without blocking ordinary names', async t => {
+  const { kit, write } = await fixture(t);
+  for (const filename of ['id_dsa', 'state.tfstate', 'state.tfstate.backup', 'application_default_credentials.json',
+    'service-account-prod.json', 'client_secret_app.json', 'my-adminsdk-prod.json']) {
+    await write(filename, 'secret');
+    await assert.rejects(() => kit.read(filename), error => error.code === 'BLOCKED');
+  }
+  await write('tokenizer.txt', 'safe'); await write('secretary.md', 'safe');
+  await kit.read('tokenizer.txt'); await kit.read('secretary.md');
+});
+test('cache creates a private gitignore that survives purge', async t => {
+  const { root, kit, write } = await fixture(t);
+  await write('a.txt', 'a'); await kit.read('a.txt');
+  assert.equal(await fs.readFile(path.join(root, '.context-kit-cache', '.gitignore'), 'utf8'), '*\n');
+  await kit.purge();
+  assert.equal(await fs.readFile(path.join(root, '.context-kit-cache', '.gitignore'), 'utf8'), '*\n');
+});
+test('open identity changes are rejected during read', async t => {
+  const { kit, root, write } = await fixture(t);
+  await write('race.txt', 'before');
+  kit.readHooks.beforeOpen = async filename => {
+    const replacement = `${filename}.replacement`;
+    await fs.rename(filename, replacement);
+    await fs.writeFile(filename, 'after');
+  };
+  await assert.rejects(() => kit.read('race.txt'), error => error.code === 'SOURCE_CHANGED');
 });
 test('large outputs return an explicit pointer, not a silently truncated body', async t => {
   const { kit, write } = await fixture(t, { maxOutputChars: 512, maxPageChars: 256 });
