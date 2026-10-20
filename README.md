@@ -64,6 +64,8 @@ npm test
 node src/cli.mjs read examples/sample.log
 ```
 
+同梱の `.vscode/mcp.json` と `integration/mcp.vscode.example.json` は、`PATH` に `node` がある環境向けの設定例です。環境依存を避ける場合は `node src/cli.mjs config` で生成した設定を使ってください。
+
 先頭の `CONTEXT_KIT` 行に保存版の `snapshot_id` と `sha256` が表示されます。
 表示された**実際の値**を使って原文の1〜8行を確認できます。
 
@@ -107,6 +109,8 @@ node src/cli.mjs config --root "/absolute/path/to/project" --format portable
 
 設定先が不明なら VS Code の `MCP: Add Server` で Command (stdio) を選び、生成結果の command と args を登録します。
 起動時の信頼確認・ツール実行許可は、内容を読んでから承認してください。組織の管理設定で MCP が制限される場合もあります。
+
+Node が見つからない場合は `node --version` と `node -p "process.execPath"` で、実行環境と絶対パスを確認してください。
 
 ### 3. 引き継ぎ用プロンプトを配置
 
