@@ -104,9 +104,8 @@ export async function planSetup({ root, templateRoot, description = '', designPa
   const lines = ignore === null ? [] : ignore.split(/\r?\n/).map(line => line.trim().replace(/^\//, ''));
   const meaningful = lines.map((line, index) => ({ line, index })).filter(({ line }) => line && !line.startsWith('#'));
   const requiredIndexes = REQUIRED_IGNORES.map(line => meaningful.findLast(item => item.line === line)?.index);
-  const lastRequired = Math.max(...requiredIndexes.filter(index => index !== undefined), -1);
-  const negationAfter = meaningful.some(({ line, index }) => index > lastRequired && line.startsWith('!'));
-  const missing = requiredIndexes.every(index => index !== undefined) && !negationAfter ? [] : REQUIRED_IGNORES;
+  const lastNegation = Math.max(...meaningful.filter(({ line }) => line.startsWith('!')).map(({ index }) => index), -1);
+  const missing = requiredIndexes.every(index => index !== undefined && index > lastNegation) ? [] : REQUIRED_IGNORES;
   if (missing.length) {
     const eol = ignore?.includes('\r\n') ? '\r\n' : '\n';
     const text = (ignore || '') + (ignore && !ignore.endsWith('\n') ? eol : '') + missing.join(eol) + eol;

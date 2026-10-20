@@ -63,7 +63,7 @@ test('existing catalog is not changed by newly supplied design paths', async t =
 });
 test('gitignore appending preserves existing text, CRLF and permissions, protects against earlier negations', async t => {
   const { root, plan, write, read } = await fixture(t);
-  const original = '# 自分の設定\r\n.context-kit-cache/\r\n.context-kit/\r\n!.context-kit-cache/**';
+  const original = '# 自分の設定\r\n.context-kit-cache/\r\n!.context-kit-cache/**\r\n.context-kit/';
   await write('.gitignore', original); await fs.chmod(path.join(root, '.gitignore'), 0o640);
   const proposed = await plan(); const change = proposed.changes.find(c => c.path === '.gitignore');
   assert.equal(change.action, 'append');
