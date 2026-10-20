@@ -31,7 +31,7 @@ async function existingText(root, name, limit = 2 * 1024 * 1024) {
   } catch (e) { if (e.code === 'ENOENT') return null; throw e; }
 }
 export async function planSetup({ root, templateRoot, description = '', designPaths = [] }) {
-  root = await fs.realpath(root);
+  root = path.resolve(root);
   if (!(await fs.stat(root)).isDirectory()) throw new Error('Select a local project folder');
   if (typeof description !== 'string' || description.length > 2000 || description.includes('\0')) throw new Error('Project description must be at most 2000 characters');
   if (!Array.isArray(designPaths) || designPaths.length > 10) throw new Error('Choose at most 10 Markdown design files');
@@ -58,7 +58,10 @@ export async function planSetup({ root, templateRoot, description = '', designPa
       const kit = await ContextKit.create(root), selected = [], seen = new Set();
       for (const requested of designPaths) {
         if (typeof requested !== 'string' || !requested.toLowerCase().endsWith('.md')) throw new Error('Choose Markdown (.md) files only');
-        const actual = await kit.sourcePath(requested); // Workspace, extension, secret-path and symlink checks.
+        const relativeRequested = path.isAbsolute(requested) ? path.relative(root, requested) : requested;
+        if (!relativeRequested || relativeRequested.startsWith(`..${path.sep}`) || path.isAbsolute(relativeRequested))
+          throw new Error(`Design path is outside workspace: ${requested}`);
+        const actual = await kit.sourcePath(relativeRequested); // Workspace, extension, secret-path and symlink checks.
         const info = await fs.stat(actual);
         if (!info.isFile() || info.size > kit.config.maxInputBytes) throw new Error('Design file must be a regular file within the input byte limit');
         if (seen.has(actual)) continue;

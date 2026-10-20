@@ -72,11 +72,12 @@ export class ContextRegistry {
   async registration(sourceRelative) {
     const catalog = await this.catalog();
     if (!catalog) return null;
+    const sourceActual = await fs.realpath(path.resolve(this.kit.root, sourceRelative));
     const matches = [];
     for (const doc of catalog.documents) {
       try {
         const actual = await this.kit.sourcePath(doc.path);
-        if (same(path.relative(this.kit.root, actual), sourceRelative)) matches.push(doc);
+        if (same(await fs.realpath(actual), sourceActual)) matches.push(doc);
       } catch { /* Unavailable entries are shown in the catalog, not trusted. */ }
     }
     if (matches.length > 1) fail('multiple registrations point to the same source; resolve the ambiguity before assigning authority');

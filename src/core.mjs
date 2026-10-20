@@ -175,11 +175,11 @@ const format = (meta, body) => `CONTEXT_KIT ${JSON.stringify(meta)}\nSOURCE DATA
 
 export class ContextKit {
   static async create(root, config = {}) {
-    const absolute = await fs.realpath(path.resolve(root));
-    if (!(await fs.stat(absolute)).isDirectory()) throw new Error('Root must be a directory');
-    return new ContextKit(absolute, validateConfig(config));
+    const absolute = path.resolve(root), realRoot = await fs.realpath(absolute);
+    if (!(await fs.stat(realRoot)).isDirectory()) throw new Error('Root must be a directory');
+    return new ContextKit(absolute, validateConfig(config), realRoot);
   }
-  constructor(root, config) { this.root = root; this.config = config; this.cache = path.join(root, CACHE); }
+  constructor(root, config, realRoot = root) { this.root = root; this.realRoot = realRoot; this.config = config; this.cache = path.join(root, CACHE); }
 
   checkRelative(relative) {
     const segments = relative.split(path.sep).map(s => s.toLowerCase());
@@ -202,10 +202,10 @@ export class ContextKit {
     try { this.checkRelative(path.relative(this.root, candidate)); }
     catch (error) { if (!error.code) error.code = 'BLOCKED'; throw error; }
     const actual = await fs.realpath(candidate);
-    if (!within(this.root, actual)) throw new Error('Symlink resolves outside workspace');
-    try { this.checkRelative(path.relative(this.root, actual)); }
+    if (!within(this.realRoot, actual)) throw coded('Symlink resolves outside workspace', 'BLOCKED');
+    try { this.checkRelative(path.relative(this.realRoot, actual)); }
     catch (error) { if (!error.code) error.code = 'BLOCKED'; throw error; }
-    return actual;
+    return candidate;
   }
   async localText(requested, limit = this.config.maxInputBytes) {
     const filename = await this.sourcePath(requested);
