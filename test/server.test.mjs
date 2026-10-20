@@ -6,7 +6,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { ContextKit } from '../src/core.mjs';
-import { createHandler, TOOLS } from '../src/server.mjs';
+import { createHandler, PublicError, TOOLS, publicToolError } from '../src/server.mjs';
 async function setup(t) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'context-kit-rpc-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
@@ -42,6 +42,10 @@ test('MCP tool errors do not expose absolute paths', async t => {
   assert.equal(text, 'FILE_NOT_FOUND: File not found');
   assert.ok(!text.includes(root)); assert.ok(!text.includes(os.tmpdir()));
   assert.ok(errors.some(message => message.includes(path.join(root, 'missing.txt'))));
+});
+test('MCP only exposes allowlisted PublicError messages', () => {
+  assert.equal(publicToolError(new PublicError('BLOCKED', 'Blocked by policy')), 'BLOCKED: Blocked by policy');
+  assert.equal(publicToolError(new Error('/private/secret.txt')), 'CONTEXT_KIT_ERROR: Operation failed');
 });
 test('MCP unknown methods, tools, parameters and invalid types are rejected', async t => {
   const { handle } = await setup(t); await initialize(handle);
