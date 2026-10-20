@@ -3,10 +3,23 @@ import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { ContextKit } from './core.mjs';
 import { validateCatalog } from './context.mjs';
+import { stripBOM } from './json.mjs';
 const digest = text => createHash('sha256').update(text, 'utf8').digest('hex');
 const DOCS = ['overview.md', 'glossary.md', 'requirements.md', 'design/overview.md', 'decisions.md', 'questions.md'];
 const PROMPTS = ['context-handoff-save', 'context-handoff-resume', 'context-read', 'context-stats', 'context-overview', 'context-question-propose'];
 const REQUIRED_IGNORES = ['.context-kit-cache/', '.context-kit/'];
+export async function renameWithRetry(rename, from, to, { attempts = 5, delay = 100 } = {}) {
+  let lastError;
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    try { await rename(from, to); return; }
+    catch (error) {
+      lastError = error;
+      if (!['EPERM', 'EBUSY', 'EACCES'].includes(error.code)) throw error;
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
+  }
+  throw new Error('ファイルを閉じて再実行してください。', { cause: lastError });
+}
 function relativeName(name) {
   if (typeof name !== 'string' || !name || path.isAbsolute(name) || /^[a-z]:/i.test(name) || name.includes('\\') || name.split('/').some(x => !x || x === '.' || x === '..')) throw new Error('Unsafe setup path');
   return name;
@@ -43,17 +56,23 @@ export async function planSetup({ root, templateRoot, description = '', designPa
   for (const doc of DOCS) {
     const relative = `project-context/${doc}`;
     let text = await fs.readFile(path.join(templateRoot, relative), 'utf8');
-    if (doc === 'overview.md' && description.trim()) text = text.replace('## 何を作るか\n未記入', `## 何を作るか\n${description.trim()}`);
+    if (doc === 'overview.md' && description.trim()) {
+      const replaced = text.replace(/## 何を作るか\r?\n未記入/, `## 何を作るか\n${description.trim()}`);
+      if (replaced === text) warnings.push('概要テンプレートの説明欄を置換できませんでした。overview.mdを確認してください。');
+      text = replaced;
+    }
     await queueMissing(relative, text);
   }
   const catalogName = 'project-context/catalog.json';
   const currentCatalog = await existingText(root, catalogName, 65536);
   if (currentCatalog !== null) {
-    validateCatalog(JSON.parse(currentCatalog)); preserved.push(catalogName);
+    try { validateCatalog(JSON.parse(stripBOM(currentCatalog))); }
+    catch { throw new Error('project-context/catalog.json is invalid JSON; check BOM, trailing commas and UTF-8 encoding'); }
+    preserved.push(catalogName);
     if (designPaths.length) warnings.push('既存の台帳は変更しません。追加の設計書は台帳へ別途登録してください。');
     if (description.trim() && preserved.includes('project-context/overview.md')) warnings.push('既存のプロジェクト概要は上書きしていません。');
   } else {
-    const catalog = validateCatalog(JSON.parse(await fs.readFile(path.join(templateRoot, catalogName), 'utf8')));
+    const catalog = validateCatalog(JSON.parse(stripBOM(await fs.readFile(path.join(templateRoot, catalogName), 'utf8'))));
     if (designPaths.length) {
       const kit = await ContextKit.create(root), selected = [], seen = new Set();
       for (const requested of designPaths) {
@@ -64,9 +83,10 @@ export async function planSetup({ root, templateRoot, description = '', designPa
         const actual = await kit.sourcePath(relativeRequested); // Workspace, extension, secret-path and symlink checks.
         const info = await fs.stat(actual);
         if (!info.isFile() || info.size > kit.config.maxInputBytes) throw new Error('Design file must be a regular file within the input byte limit');
-        if (seen.has(actual)) continue;
-        seen.add(actual);
-        selected.push(path.relative(root, actual).replaceAll(path.sep, '/'));
+        const actualReal = await fs.realpath(actual);
+        if (seen.has(actualReal)) continue;
+        seen.add(actualReal);
+        selected.push(path.relative(kit.realRoot, actualReal).replaceAll(path.sep, '/'));
       }
       if (selected.length) {
         const first = catalog.documents.find(d => d.id === 'design'); first.path = selected[0];
@@ -82,19 +102,25 @@ export async function planSetup({ root, templateRoot, description = '', designPa
   }
   const ignore = await existingText(root, '.gitignore', 65536);
   const lines = ignore === null ? [] : ignore.split(/\r?\n/).map(line => line.trim().replace(/^\//, ''));
-  const effectiveTail = lines.filter(line => line && !line.startsWith('#')).slice(-2);
-  const missing = REQUIRED_IGNORES.every((line, i) => effectiveTail[i] === line) ? [] : REQUIRED_IGNORES;
+  const meaningful = lines.map((line, index) => ({ line, index })).filter(({ line }) => line && !line.startsWith('#'));
+  const requiredIndexes = REQUIRED_IGNORES.map(line => meaningful.findLast(item => item.line === line)?.index);
+  const lastRequired = Math.max(...requiredIndexes.filter(index => index !== undefined), -1);
+  const negationAfter = meaningful.some(({ line, index }) => index > lastRequired && line.startsWith('!'));
+  const missing = requiredIndexes.every(index => index !== undefined) && !negationAfter ? [] : REQUIRED_IGNORES;
   if (missing.length) {
     const eol = ignore?.includes('\r\n') ? '\r\n' : '\n';
     const text = (ignore || '') + (ignore && !ignore.endsWith('\n') ? eol : '') + missing.join(eol) + eol;
     changes.push({ path: '.gitignore', action: ignore === null ? 'create' : 'append', text, ...(ignore !== null ? { beforeHash: digest(ignore) } : {}) });
   } else preserved.push('.gitignore');
+  const attributes = await existingText(root, '.gitattributes', 65536);
+  if (attributes === null) changes.push({ path: '.gitattributes', action: 'create', text: '*.md text eol=lf\n' });
+  else preserved.push('.gitattributes');
   const mcp = await existingText(root, '.vscode/mcp.json', 65536);
   if (mcp && /"context-kit"\s*:/.test(mcp)) warnings.push('旧版の context-kit 接続設定があります。拡張版との重複を避けるには、VS CodeのMCP一覧で旧版を停止してください。既存設定は変更しません。');
   return { root, changes, preserved, warnings };
 }
 export async function applySetup(plan) {
-  const root = await fs.realpath(plan.root), created = [], updated = [];
+  const root = await fs.realpath(plan.root), created = [], createdDirs = [], updated = [];
   for (const change of plan.changes) {
     const current = await existingText(root, change.path);
     if ((change.action === 'create' && current !== null) || (change.action === 'append' && (current === null || digest(current) !== change.beforeHash))) throw new Error(`Setup target changed; review the plan again: ${change.path}`);
@@ -103,7 +129,14 @@ export async function applySetup(plan) {
   try {
     for (const change of plan.changes.filter(c => c.action === 'create')) {
       const filename = await safeTarget(root, change.path);
+      const missingDirs = [];
+      let current = path.dirname(filename);
+      while (current !== root) {
+        try { await fs.lstat(current); break; }
+        catch (error) { if (error.code !== 'ENOENT') throw error; missingDirs.push(current); current = path.dirname(current); }
+      }
       await fs.mkdir(path.dirname(filename), { recursive: true });
+      createdDirs.push(...missingDirs);
       await safeTarget(root, change.path);
       await fs.writeFile(filename, change.text, { flag: 'wx', mode: 0o600 }); created.push(change);
     }
@@ -116,14 +149,27 @@ export async function applySetup(plan) {
         if (process.platform !== 'win32') await fs.chmod(temporary, mode);
         const latest = await existingText(root, change.path);
         if (latest === null || digest(latest) !== change.beforeHash) throw new Error('Gitignore changed during setup');
-        await fs.rename(temporary, filename); updated.push(change.path);
-      } finally { await fs.unlink(temporary).catch(e => { if (e.code !== 'ENOENT') throw e; }); }
+        await renameWithRetry(fs.rename, temporary, filename);
+        updated.push(change.path);
+      } finally {
+        try { await fs.unlink(temporary); }
+        catch (error) { if (error.code !== 'ENOENT') console.error(`Setup temporary cleanup failed: ${error.message}`); }
+      }
     }
     return { root, created: created.map(c => c.path), updated, preserved: plan.preserved, warnings: plan.warnings };
   } catch (e) {
     for (const change of created.reverse()) {
       const current = await existingText(root, change.path).catch(() => null);
-      if (current !== null && digest(current) === digest(change.text)) await fs.unlink(path.join(root, change.path));
+      if (current !== null && digest(current) === digest(change.text)) {
+        try { await fs.unlink(path.join(root, change.path)); }
+        catch (cleanupError) { console.error(`Setup rollback cleanup failed: ${cleanupError.message}`); }
+      }
+    }
+    for (const directory of [...new Set(createdDirs)].sort((a, b) => b.length - a.length)) {
+      try { await fs.rmdir(directory); } catch (error) {
+        if (!['ENOENT', 'ENOTEMPTY', 'EEXIST'].includes(error.code))
+          console.error(`Setup directory cleanup failed: ${error.message}`);
+      }
     }
     throw e;
   }

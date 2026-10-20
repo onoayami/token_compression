@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { planSetup, applySetup } from '../src/setup.mjs';
+import { planSetup, applySetup, renameWithRetry } from '../src/setup.mjs';
 const templateRoot = fileURLToPath(new URL('../', import.meta.url));
 const exists = async filename => fs.access(filename).then(() => true, () => false);
 async function fixture(t) {
@@ -19,9 +19,9 @@ test('setup planning is read-only and creates only the missing draft shelf and s
   const { root, plan, read } = await fixture(t);
   const proposed = await plan({ description: '  申込画面を改善する  ' });
   assert.deepEqual(await fs.readdir(root), []);
-  assert.equal(proposed.changes.length, 14); assert.equal(proposed.preserved.length, 0);
+  assert.equal(proposed.changes.length, 15); assert.equal(proposed.preserved.length, 0);
   const result = await applySetup(proposed);
-  assert.equal(result.created.length, 14); assert.equal(result.updated.length, 0);
+  assert.equal(result.created.length, 15); assert.equal(result.updated.length, 0);
   assert.match(await read('project-context/overview.md'), /## 何を作るか\n申込画面を改善する/);
   const catalog = JSON.parse(await read('project-context/catalog.json'));
   assert.equal(catalog.documents.length, 6);
@@ -37,7 +37,7 @@ test('repeated setup preserves all existing documents, catalog and prompts and b
   await write('.github/prompts/context-read.prompt.md', 'MY PROMPT\n');
   const catalog = await read('project-context/catalog.json');
   const repeated = await plan({ description: 'DO NOT OVERWRITE' });
-  assert.equal(repeated.changes.length, 0); assert.equal(repeated.preserved.length, 14);
+  assert.equal(repeated.changes.length, 0); assert.equal(repeated.preserved.length, 15);
   assert.ok(repeated.warnings.some(w => w.includes('上書き')));
   await applySetup(repeated);
   assert.equal(await read('project-context/overview.md'), '# USER CONTENT\n');
@@ -128,4 +128,29 @@ test('partial failure rolls back only new files and retains user data', async t 
   await assert.rejects(() => applySetup(proposed));
   assert.equal(await exists(path.join(root, 'project-context/overview.md')), false);
   assert.equal(await read('keep.txt'), 'KEEP');
+});
+test('setup accepts CRLF templates and warns when the description marker is absent', async t => {
+  const { root } = await fixture(t);
+  const custom = await fs.mkdtemp(path.join(os.tmpdir(), 'context-kit-template-'));
+  t.after(() => fs.rm(custom, { recursive: true, force: true }));
+  await fs.cp(templateRoot, custom, { recursive: true });
+  const overview = path.join(custom, 'project-context/overview.md');
+  const original = await fs.readFile(overview, 'utf8');
+  await fs.writeFile(overview, original.replaceAll('\n', '\r\n'));
+  const proposed = await planSetup({ root, templateRoot: custom, description: '説明' });
+  assert.match(proposed.changes.find(change => change.path === 'project-context/overview.md').text, /## 何を作るか\n説明/);
+  await fs.writeFile(overview, original.replace('## 何を作るか\n未記入', '## 説明欄が変更された\n未記入'));
+  const warned = await planSetup({ root: await fs.mkdtemp(path.join(os.tmpdir(), 'context-kit-template-root-')), templateRoot: custom, description: '説明' });
+  assert.ok(warned.warnings.some(warning => warning.includes('概要テンプレート')));
+});
+test('setup rename retry uses fixed guidance after transient Windows errors', async () => {
+  let attempts = 0;
+  await renameWithRetry(async () => {
+    attempts++;
+    if (attempts < 3) { const error = new Error('busy'); error.code = 'EBUSY'; throw error; }
+  }, 'from', 'to', { delay: 0 });
+  assert.equal(attempts, 3);
+  await assert.rejects(() => renameWithRetry(async () => {
+    const error = new Error('locked'); error.code = 'EPERM'; throw error;
+  }, 'from', 'to', { delay: 0 }), /ファイルを閉じて再実行/);
 });
