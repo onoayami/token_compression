@@ -6,6 +6,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { parseArgs } from '../src/options.mjs';
 const run = promisify(execFile);
 const cli = fileURLToPath(new URL('../src/cli.mjs', import.meta.url));
 async function rootFor(t) {
@@ -14,6 +15,11 @@ async function rootFor(t) {
   return root;
 }
 const call = args => run(process.execPath, [cli, ...args]);
+test('CLI accepts equals syntax for values beginning with option markers', () => {
+  assert.deepEqual(parseArgs(['--quote=--x'], new Set(['quote'])).options.quote, '--x');
+  assert.deepEqual(parseArgs(['--quote', 'text'], new Set(['quote'])).options.quote, 'text');
+  assert.throws(() => parseArgs(['--quote', '--x'], new Set(['quote'])), /use --quote=VALUE/);
+});
 test('CLI config prints a VS Code stdio setup without changing workspace files', async t => {
   const root = await rootFor(t); await fs.writeFile(path.join(root, 'keep.txt'), 'keep');
   const { stdout, stderr } = await call(['config', '--root', root]);

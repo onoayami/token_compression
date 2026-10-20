@@ -14,9 +14,15 @@ export function parseArgs(args, allowed = new Set(['root', 'config', 'mode', 'fo
   const options = { root: process.cwd() }, positionals = [];
   for (let i = 0; i < args.length; i++) {
     if (!args[i].startsWith('--')) { positionals.push(args[i]); continue; }
-    const key = args[i].slice(2);
+    const equals = args[i].indexOf('=');
+    const key = (equals < 0 ? args[i].slice(2) : args[i].slice(2, equals));
     if (!allowed.has(key)) throw new Error(`Unknown option for ${command}: --${key}`);
-    if (args[i + 1] === undefined || args[i + 1].startsWith('--')) throw new Error(`Invalid option: ${args[i]}`);
+    if (equals >= 0) {
+      options[key] = args[i].slice(equals + 1);
+      continue;
+    }
+    if (args[i + 1] === undefined || args[i + 1].startsWith('--'))
+      throw new Error(`Invalid option: ${args[i]} (use --${key}=VALUE for values beginning with --)`);
     options[key] = args[++i];
   }
   return { options, positionals };
