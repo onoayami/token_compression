@@ -113,7 +113,7 @@ export async function startServer(options) {
 }
 if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
   try {
-    const { options, positionals } = parseArgs(process.argv.slice(2));
+    const { options, positionals } = parseArgs(process.argv.slice(2), new Set(['root', 'config']), 'server');
     if (positionals.length) throw new Error('Unexpected server arguments');
     await startServer(options);
   } catch (e) { console.error(e.message); process.exitCode = 1; }

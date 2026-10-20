@@ -47,6 +47,24 @@ test('CLI unsupported files and malformed flags have nonzero exit status', async
   await assert.rejects(() => call(['config', '--unknown', 'yes']), e => e.code === 1);
   await assert.rejects(() => call(['config', '--format', 'other']), e => e.code === 1);
 });
+test('CLI rejects options belonging to another command', async t => {
+  const root = await rootFor(t);
+  await fs.writeFile(path.join(root, 'a.txt'), 'a');
+  for (const args of [
+    ['read', 'a.txt', '--format', 'json'],
+    ['read', 'a.txt', '--offset', '1'],
+    ['source', '00000000-0000-4000-8000-000000000000', '--mode', 'safe'],
+    ['stats', '--mode', 'preview'],
+    ['stats', '--limit', '1'],
+    ['purge', '--format', 'json'],
+    ['config', '--mode', 'safe'],
+    ['config', '--offset', '1'],
+  ]) {
+    const option = args.find(value => value.startsWith('--')).slice(2);
+    await assert.rejects(() => call([...args, '--root', root]), e =>
+      e.code === 1 && e.stderr.includes(`Unknown option for ${args[0]}: --${option}`));
+  }
+});
 test('config validates the root and configuration without creating a cache', async t => {
   const root = await rootFor(t);
   const config = path.join(root, 'settings.json');

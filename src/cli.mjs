@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { parseArgs, openKit } from './options.mjs';
+import { COMMAND_OPTIONS, parseArgs, openKit } from './options.mjs';
 import { formatStats } from './report.mjs';
 import { formatContextOverview } from './context.mjs';
 const help = `Copilot Context Kit (Node.js 20+, no npm install needed)
@@ -19,7 +19,7 @@ try {
   const [command = 'help', ...rest] = process.argv.slice(2);
   if (['help', '--help', '-h'].includes(command)) console.log(help);
   else {
-    const { options: o, positionals: p } = parseArgs(rest);
+    const { options: o, positionals: p } = parseArgs(rest, COMMAND_OPTIONS[command], command);
     if (command === 'config') {
       if (p.length) throw new Error('config takes no positional arguments');
       await openKit(o);
