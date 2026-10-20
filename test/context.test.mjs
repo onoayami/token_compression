@@ -3,11 +3,12 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
+import { randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { ContextKit } from '../src/core.mjs';
-import { validateCatalog, mergeRanges } from '../src/context.mjs';
+import { ContextRegistry, validateCatalog, mergeRanges } from '../src/context.mjs';
 import { createHandler } from '../src/server.mjs';
 const exec = promisify(execFile);
 const meta = text => JSON.parse(text.split('\n')[0].slice('CONTEXT_KIT '.length));
@@ -45,6 +46,29 @@ test('catalog rejects traversal, absolute paths and invalid official version', (
 });
 test('range merging preserves gaps and combines overlapping/adjacent intervals', () => {
   assert.deepEqual(mergeRanges([[10, 20], [0, 5], [4, 10], [30, 32], [7, 7]]), [[0, 20], [30, 32]]);
+});
+test('concurrent context output updates preserve every document record', async t => {
+  const { root, kit } = await setup(t);
+  const registry = new ContextRegistry(kit);
+  const source = text => ({ text, source: 'project-context/glossary.md', sha256: 'a'.repeat(64), id: randomUUID(), createdAt: new Date().toISOString() });
+  const docs = Array.from({ length: 10 }, (_, i) => entry({ id: `doc-${i}`, title: `Doc ${i}` }));
+  await Promise.all(docs.map((doc, i) => registry.noteOutput(source(`body-${i}`), doc, { start: 0, end: 6, hasBody: true })));
+  const ledger = await registry.readLedger();
+  assert.equal(ledger.records.length, 10);
+  assert.deepEqual(new Set(ledger.records.map(record => record.docId)), new Set(docs.map(doc => doc.id)));
+});
+test('context output update racing purge leaves a valid ledger or a cleanly purged state', async t => {
+  const { kit } = await setup(t);
+  const registry = new ContextRegistry(kit);
+  const doc = entry();
+  const source = { text: 'body', source: doc.path, sha256: 'b'.repeat(64), id: randomUUID(), createdAt: new Date().toISOString() };
+  await Promise.all([
+    registry.noteOutput(source, doc, { start: 0, end: 4, hasBody: true }),
+    kit.purge(),
+  ]);
+  const ledger = await registry.readLedger();
+  assert.equal(ledger.version, 1);
+  assert.ok(Array.isArray(ledger.records));
 });
 test('listing hashes locally but never sends body or marks it as output', async t => {
   const { kit, list } = await setup(t); const overview = await list();

@@ -122,17 +122,19 @@ export class ContextRegistry {
   }
   async noteOutput(source, doc, { start = 0, end = 0, hasBody = false } = {}) {
     if (!doc) return;
-    const ledger = await this.readLedger(), total = points(source.text), fingerprint = documentFingerprint(doc);
-    const old = ledger.records.find(r => r.docId === doc.id);
-    const compatible = old && old.sourceHash === source.sha256 && old.metadataHash === fingerprint && old.charCount === total;
-    let ranges = mergeRanges([...(compatible ? old.ranges : []), ...(hasBody ? [[start, end]] : [])]);
-    let coverageLimited = compatible && !!old.coverageLimited;
-    if (ranges.length > 1000) { ranges = []; coverageLimited = true; }
-    const record = { docId: doc.id, sourcePath: source.source, sourceHash: source.sha256, metadataHash: fingerprint,
-      charCount: total, ranges, emptyBodyReturned: (compatible && old.emptyBodyReturned) || (hasBody && total === 0),
-      coverageLimited, lastSnapshotId: source.id, lastOutputAt: new Date().toISOString() };
-    const records = [...ledger.records.filter(r => r.docId !== doc.id), record].slice(-50);
-    await this.writeLedger({ version: 1, records });
+    await this.kit.withCacheLock(async () => {
+      const ledger = await this.readLedger(), total = points(source.text), fingerprint = documentFingerprint(doc);
+      const old = ledger.records.find(r => r.docId === doc.id);
+      const compatible = old && old.sourceHash === source.sha256 && old.metadataHash === fingerprint && old.charCount === total;
+      let ranges = mergeRanges([...(compatible ? old.ranges : []), ...(hasBody ? [[start, end]] : [])]);
+      let coverageLimited = compatible && !!old.coverageLimited;
+      if (ranges.length > 1000) { ranges = []; coverageLimited = true; }
+      const record = { docId: doc.id, sourcePath: source.source, sourceHash: source.sha256, metadataHash: fingerprint,
+        charCount: total, ranges, emptyBodyReturned: (compatible && old.emptyBodyReturned) || (hasBody && total === 0),
+        coverageLimited, lastSnapshotId: source.id, lastOutputAt: new Date().toISOString() };
+      const records = [...ledger.records.filter(r => r.docId !== doc.id), record].slice(-50);
+      await this.writeLedger({ version: 1, records });
+    });
   }
   async describe(doc, ledger, trackingError) {
     const { authority_notice, ...publicDoc } = this.publicDocument(doc);
