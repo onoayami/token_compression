@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
+import { hostname } from 'node:os';
 import { ContextRegistry } from './context.mjs';
 
 export const DEFAULTS = Object.freeze({
@@ -179,7 +180,10 @@ export class ContextKit {
     if (!(await fs.stat(realRoot)).isDirectory()) throw new Error('Root must be a directory');
     return new ContextKit(absolute, validateConfig(config), realRoot);
   }
-  constructor(root, config, realRoot = root) { this.root = root; this.realRoot = realRoot; this.config = config; this.cache = path.join(root, CACHE); }
+  constructor(root, config, realRoot = root) {
+    this.root = root; this.realRoot = realRoot; this.config = config; this.cache = path.join(root, CACHE);
+    this.snapshotIndex = new Map();
+  }
 
   checkRelative(relative) {
     const segments = relative.split(path.sep).map(s => s.toLowerCase());
@@ -244,18 +248,25 @@ export class ContextKit {
   async withCacheLock(fn) {
     await this.ensureCache();
     const lockfile = path.join(this.cache, '.lock');
+    const owner = { token: randomUUID(), pid: process.pid, hostname: hostname(), createdAt: new Date().toISOString() };
     let handle;
     for (let attempt = 0; attempt < 200; attempt++) {
       try {
         handle = await fs.open(lockfile, 'wx', 0o600);
-        await handle.writeFile(`${Date.now()}\n`);
+        await handle.writeFile(JSON.stringify(owner));
         break;
       } catch (error) {
         if (error.code !== 'EEXIST') throw error;
         try {
-          const info = await fs.stat(lockfile);
-          if (Date.now() - info.mtimeMs > 30000) await fs.unlink(lockfile);
-        } catch (staleError) { if (staleError.code !== 'ENOENT') throw staleError; }
+          const current = JSON.parse(await fs.readFile(lockfile, 'utf8'));
+          if (current.hostname === owner.hostname && Number.isInteger(current.pid)) {
+            let alive = true;
+            try { process.kill(current.pid, 0); } catch (probe) { alive = probe.code !== 'ESRCH'; }
+            if (!alive) await fs.unlink(lockfile);
+          }
+        } catch (staleError) {
+          if (!['ENOENT', 'EACCES'].includes(staleError.code)) throw staleError;
+        }
         await new Promise(resolve => setTimeout(resolve, 10));
       }
     }
@@ -263,7 +274,11 @@ export class ContextKit {
     try { return await fn(); }
     finally {
       await handle.close();
-      try { await fs.unlink(lockfile); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+      try {
+        const current = JSON.parse(await fs.readFile(lockfile, 'utf8'));
+        if (current.token === owner.token && current.pid === owner.pid && current.hostname === owner.hostname)
+          await fs.unlink(lockfile);
+      } catch (error) { if (error.code !== 'ENOENT') throw error; }
     }
   }
   async cacheFiles() {
@@ -291,13 +306,13 @@ export class ContextKit {
   async save(text, relative) {
     return this.withCacheLock(async () => {
       const normalized = relative.replaceAll(path.sep, '/'), digest = sha256(text);
-      for (const file of await this.cacheFiles()) {
-        const id = path.basename(file.filename, '.json');
+      const key = `${normalized}\0${digest}`, existingId = this.snapshotIndex.get(key);
+      if (existingId) {
         try {
-          const existing = await this.load(id);
+          const existing = await this.load(existingId);
           if (existing.source === normalized && existing.sha256.toLowerCase() === digest &&
               sha256(existing.text) === digest) return existing;
-        } catch { /* Expired, malformed, or tampered snapshots are not reusable. */ }
+        } catch { this.snapshotIndex.delete(key); }
       }
       const data = { version: 1, id: randomUUID(), source: normalized,
         createdAt: new Date().toISOString(), sha256: digest, text };
@@ -308,6 +323,7 @@ export class ContextKit {
         await fs.writeFile(temporary, serialized, { flag: 'wx', mode: 0o600 });
         await fs.rename(temporary, path.join(this.cache, `${data.id}.json`));
       } finally { try { await fs.unlink(temporary); } catch (error) { if (error.code !== 'ENOENT') throw error; } }
+      this.snapshotIndex.set(key, data.id);
       return data;
     });
   }

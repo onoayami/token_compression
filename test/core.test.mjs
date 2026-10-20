@@ -209,3 +209,21 @@ test('identical reads reuse an unexpired intact snapshot', async t => {
   const third = parse(await kit.read('a.txt'));
   assert.notEqual(third.meta.snapshot_id, first.meta.snapshot_id);
 });
+test('snapshot reuse is process-local and does not scan another process cache', async t => {
+  const { root, write } = await fixture(t);
+  await write('a.txt', 'same content');
+  const first = parse(await (await ContextKit.create(root)).read('a.txt'));
+  const secondKit = await ContextKit.create(root);
+  const second = parse(await secondKit.read('a.txt'));
+  assert.notEqual(second.meta.snapshot_id, first.meta.snapshot_id);
+  assert.equal((await secondKit.cacheFiles()).length, 2);
+});
+test('dead same-host lock owners can be recovered, but live owners are not time-reclaimed', async t => {
+  const { kit, root, write } = await fixture(t);
+  await kit.ensureCache();
+  const lock = path.join(root, '.context-kit-cache', '.lock');
+  await fs.writeFile(lock, JSON.stringify({ token: 'dead', pid: 999999, hostname: (await import('node:os')).hostname(), createdAt: new Date().toISOString() }));
+  await write('a.txt', 'content');
+  await kit.read('a.txt');
+  assert.equal(await fs.stat(lock).catch(error => error.code), 'ENOENT');
+});
