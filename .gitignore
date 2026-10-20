@@ -2,3 +2,5 @@ node_modules/
 .context-kit-cache/
 .context-kit/
 *.zip
+dist/
+*.vsix

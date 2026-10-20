@@ -3,24 +3,35 @@
 **会話の引き継ぎ ＋ 読む資料の整理 ＋ 要点から原文へ戻る足掛かり。**
 VS Code の GitHub Copilot を想定した小さなスターターです。Headroom のクローンではなく、ソースコードを流用せず独立に実装しています。
 
-## インストールだけで使える？
+## 非エンジニア向け：かんたん導入版
 
-**VS Codeの拡張機能ストアから入れる完成品ではなく、初回設定が必要な試作版です。**
-ただし、このリポジトリ自体を開いて試すための接続設定と6つのプロンプトは同梱しています。
+**VS Code用の拡張ファイル（VSIX）を入れて、チャットに `@contextkit 初期設定` と入力する方式を追加しました。**
+Marketplaceには未公開です。配布ファイルは [GitHub Releases](https://github.com/onoayami/token_compression/releases/latest) に掲載します。まだ表示されない場合、ビルド・公開は完了していません。`Source code.zip` はインストール用ファイルではありません。
 
-1. Node.js 20以上をインストール（入っていれば不要）。VS CodeとGitHub Copilotを利用できる状態にする。
-2. GitHubの「Code → Download ZIP」で取得・展開し、`package.json` と `README.md` があるフォルダをVS Codeで開く。
-3. 同梱 `.vscode/mcp.json` の context-kit サーバーを確認して起動。信頼・実行許可は内容を確認してから承認する。
-4. Copilotのエージェントチャットで「kit_readで examples/sample.log をsafeで読んで」と依頼する。
-5. `/context-stats` で圧縮状況を確認する。プロンプトが出なければ「kit_statsで統計を見せて」と依頼する。
+1. Releasesの **contextkit.vsix** をダウンロード。
+2. VS Codeの拡張機能画面 → 「…」→ **VSIXからのインストール** → ダウンロードしたファイルを選ぶ。
+3. 自分の作業フォルダをVS Codeで開く。
+4. Copilotのチャットに **`@contextkit 初期設定`** と入力。
+5. 「何をするプロジェクトか」を一言で入力し、既存のMarkdown設計書があれば選ぶ。後で記入しても構いません。
+6. 作成・追記の一覧を確認して **設定する**。MCPの信頼確認が表示された場合も内容を確認する。
 
-`npm install` は不要です。組織ポリシーやVS Codeの版によって追加設定が必要になることがあります。
-このフォルダでの確認と、友人の**別の開発プロジェクトへ組み込む作業**は別です。後者は以下の接続手順を使ってください。
+拡張版では**外部Node.jsのインストール・ターミナル操作・MCP設定JSONの手編集が不要になる構成**です。
+既存の資料・台帳・プロンプトは上書きせず、不足分を作成します。キャッシュ等のGit混入防止のため、`.gitignore` には確認後に除外ルールを追記します。
+
+- ローカルのデスクトップ版VS Code **1.102以降**と、利用可能なGitHub Copilotが前提。
+- WSL・SSH・Dev Container・ブラウザー版は、この簡単導入版の対応対象外。下記のCLI方式を使ってください。
+- 本体の自動テストと拡張APIの模擬テストは実施していますが、**実際のVS Code画面・Copilot接続は未検証**です。
+- 初期設定後は通常のCopilotエージェントチャットで「kit_contextで共通知識の一覧を見せて」と依頼し、実際のツール実行を確認してください。
+- `@contextkit` は初期設定・状況確認専用です。一般の相談・実装は通常のCopilotに戻って依頼します。
+- 旧版の手動MCP接続がある場合は重複警告を出します。自動削除せず、MCP一覧で旧接続を停止します。
+
+詳しくは [拡張版の操作ガイド](vscode-extension/README.md)。ソースを改造したい方・リモート開発の方は、以下の従来方式も使えます。
 
 ## 何が入っているか
 
 | 部品 | 役割 |
 | --- | --- |
+| かんたん初期設定拡張 | 決まった合図から入力欄を開き、資料の棚・プロンプト・MCP接続を確認付きで用意 |
 | 引き継ぎ用プロンプト | Copilot が現在の会話から、確定事項・未解決事項・根拠付きのメモを作る |
 | 再開用プロンプト | 利用者が開いた新しいチャットで、メモと必要な原文だけを読む |
 | ローカル MCP | ログの重複・JSONの余分な空白を整理してから Copilot に渡す |
@@ -35,18 +46,19 @@ VS Code の GitHub Copilot を想定した小さなスターターです。Headr
 
 ## 費用と環境
 
-- Node.js **20 以上**。追加パッケージ不要。`npm install` は不要です。
-- このプログラムは外部のAI APIやネットワークへ接続しません。APIキーも不要です。
+- 拡張版はVS Code内蔵のNode実行環境を利用します。外部Nodeの追加インストールは不要です。
+- CLI版・ソースの改造はNode.js **20以上**。実行時の追加パッケージや `npm install` は不要です。
+- 独自の外部AI API・クラウドサービスへは接続しません。拡張版はPC内の127.0.0.1で認証付きのMCP接続を提供し、CLI版はstdioを使います。独自APIキーは不要です。
 - **要約・原文確認を行う Copilot の利用は、通常どおり Copilot の利用量に含まれます。無料・無制限になるものではありません。**
 - OS依存を小さくした実装ですが、実際にテストしたのは Linux / Node.js 24 です。Windows・macOS・実際の VS Code 接続はご友人の環境で確認してください。
 
-## 最初に：単体で動かす
+## 開発者・CLI向け：単体で動かす
 
 ZIPを展開し、`package.json` のあるフォルダを VS Code で開いてターミナルで実行します。
 
 ```sh
 node --version
-node --test test/core.test.mjs test/server.test.mjs test/cli.test.mjs test/stats.test.mjs test/context.test.mjs
+npm test
 node src/cli.mjs read examples/sample.log
 ```
 
@@ -62,7 +74,9 @@ node src/cli.mjs context --format text
 `<snapshot_id>` は説明用の置き場所です。山括弧ごと入力せず、実際のIDへ置き換えてください。
 不要になったデモの保存版を削除するには、同じルートを指定して `node src/cli.mjs purge` を使います。元ファイルは消えません。
 
-## VS Code / Copilot へ接続する
+## CLI方式でVS Code / Copilot へ接続する
+
+拡張版で初期設定した方は、この手動接続手順は不要です。重複登録しないでください。
 
 ### 1. ファイルを配置
 
@@ -127,7 +141,7 @@ context-kit の kit_read を使い、examples/requirements.md を safe で読ん
 4. `/context-handoff-resume` を実行し、今回必要な根拠だけ確認して再開。
 
 **キット内の `.gitignore` はプロジェクト直下のファイルを保護しません。**
-プロジェクト直下の `.gitignore` に、次の2行を追記してください。自動で追記はしません。
+CLI方式ではプロジェクト直下の `.gitignore` に、次の2行を追記してください。CLIは自動追記しません。拡張版では初期設定の確認後に不足分を追記します。
 
 ```gitignore
 .context-kit-cache/
@@ -138,7 +152,7 @@ context-kit の kit_read を使い、examples/requirements.md を safe で読ん
 
 ## 用語集や設計書をセットする
 
-`project-context/` に入力用テンプレートと登録台帳を追加しました。最初はすべて「検討中・未設定」です。
+拡張版の初期設定で `project-context/` に入力用テンプレートと登録台帳を用意します。ソースにも同じ雛形を含めています。最初はすべて「検討中・未設定」です。
 
 ```text
 project-context/
@@ -192,7 +206,7 @@ S1：元ファイル、保存版ID、SHA-256、取得日時、原文4〜5行、�
 
 ## 圧縮できた量を見る
 
-Copilotでは `/context-stats`、または「kit_statsで統計を見せて」と依頼します。
+拡張版では **`@contextkit 圧縮状況`**。通常のCopilotでは `/context-stats`、または「kit_statsで統計を見せて」と依頼します。
 ターミナルでも読めます。
 
 ```sh

@@ -5,13 +5,16 @@
 ```text
 src/context.mjs    Markdown登録台帳・版・適用範囲・本文出力記録
 src/core.mjs       圧縮・安全な入口・保存版・原文範囲取得・簡易統計
-src/server.mjs     小さな stdio MCP サーバー（4ツール）
+src/server.mjs     MCP共通ハンドラー・stdioサーバー（4ツール）
+src/setup.mjs      初期設定の計画・確認後の作成処理
 src/report.mjs     圧縮状況を日本語テキストに整形
 src/cli.mjs        単体動作・設定の表示・統計・保存版削除
 src/options.mjs    起動引数・任意設定ファイル
 integration/      VS Code設定例・手動実行プロンプト
 examples/         架空の入力・空の引き継ぎメモ
-test/              単体・MCPプロトコル・CLIテスト
+vscode-extension/ 初期設定チャット・コマンド・ローカルHTTP接続
+scripts/          VSIX用ステージ作成（公式vsceへ渡す）
+test/             単体・MCP・CLI・初期設定・模擬拡張APIテスト
 ```
 
 会話の要約を作るのは Copilot です。Node 側は会話を自動取得せず、独自AIも呼びません。
@@ -67,3 +70,14 @@ Copilot の認証情報の読み取り、通信先の強制変更、非公開API
 `src/context.mjs` の出力記録は同じ原文ハッシュ・同じ台帳条件でのみ範囲を合算します。
 
 意味的な矛盾検出や、タスクを自動判定して読む資料を選ぶ参照セットは未実装です。初期版の範囲を広げる場合も、台帳の正式性を自動で書き換えないでください。
+
+## 拡張版の開発・配布
+
+1. `npm test` でコア・初期設定・模擬APIのテストを実行。
+2. `python3 scripts/stage-extension.py` で `dist/extension/` を作る。既存の出力へは上書きしない。
+3. Node.js 22以上のビルド環境で、公式 `@vscode/vsce@4.0.0` の `vsce package --no-dependencies` を実行。一般の利用者にはできたVSIXだけを渡す。
+4. 実際のVS Code上で `docs/VERIFICATION.md` の受け入れチェックを実施。
+
+`.github/workflows/release-vsix.yml` はmainの拡張関連変更でテスト・パッケージ作成・GitHub Releaseを行います。実行にはActionsの利用と `contents: write` が必要です。既存の公開版は置換せず、次回はroot package・拡張manifest・サーバー表示・接続定義・テスト中の版を揃えて更新してください。Marketplaceへの自動公開は行いません。
+
+拡張実行時には外部Node・npm・Python・vsceは不要です。127.0.0.1のサーバーはVS Codeの拡張ホスト内で動かします。リモート開発への対応を増やす場合、拡張の実行側とファイルの所在・アクセス範囲を先に設計してください。
