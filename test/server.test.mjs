@@ -7,6 +7,7 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { ContextKit } from '../src/core.mjs';
 import { createHandler, PublicError, TOOLS, publicToolError } from '../src/server.mjs';
+import { isMainEntry, nodeVersionError } from '../src/bin-check.mjs';
 async function setup(t) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'context-kit-rpc-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
@@ -102,4 +103,21 @@ test('real stdio process speaks newline-delimited JSON-RPC with clean stdout', a
   const replies = stdout.trim().split('\n').map(JSON.parse);
   assert.deepEqual(replies.map(r => r.id), [1, 2, 3]);
   assert.match(replies[2].result.content[0].text, /Deadline: Friday/);
+});
+test('server entrypoint works through a symlink and missing argv paths are safe', async t => {
+  const { root } = await setup(t);
+  const target = fileURLToPath(new URL('../src/server.mjs', import.meta.url));
+  const link = path.join(root, 'server-link.mjs');
+  try { await fs.symlink(target, link); }
+  catch (error) { if (['EPERM', 'EACCES'].includes(error.code)) { t.skip('Symlink privilege unavailable'); return; } throw error; }
+  const child = spawn(process.execPath, [link, '--root', root], { stdio: ['pipe', 'pipe', 'pipe'] });
+  let stdout = '', stderr = ''; child.stdout.on('data', data => stdout += data); child.stderr.on('data', data => stderr += data);
+  const done = new Promise(resolve => child.on('close', code => resolve({ code, stderr })));
+  child.stdin.end(JSON.stringify(rpc(1, 'ping')) + '\n');
+  const result = await done; assert.equal(result.code, 0, result.stderr); assert.deepEqual(JSON.parse(stdout).result, {});
+  assert.equal(isMainEntry('/does/not/exist', import.meta.url), false);
+});
+test('Node version check has a stable result for supported and old majors', () => {
+  assert.equal(nodeVersionError('20.0.0'), null);
+  assert.match(nodeVersionError('19.9.0'), /Node\.js 20/);
 });
