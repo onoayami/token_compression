@@ -35,6 +35,7 @@ const integer = (value, name, low, high) => {
     throw new Error(`${name} must be an integer in ${low}..${high}`);
   return value;
 };
+const coded = (message, code) => Object.assign(new Error(message), { code });
 const nonNegativeInteger = value => Number.isInteger(value) && value >= 0;
 export function isValidMetricEvent(event) {
   if (!event || typeof event !== 'object' || !['read', 'retrieve', 'context'].includes(event.type) ||
@@ -144,12 +145,12 @@ export function compact(text, kind, mode, c = validateConfig()) {
 
 async function limitedRead(filename, limit) {
   const info = await fs.lstat(filename);
-  if (!info.isFile() || info.isSymbolicLink()) throw new Error('Expected a regular, non-symlink file');
+  if (!info.isFile() || info.isSymbolicLink()) throw coded('Expected a regular, non-symlink file', 'READ_FAILED');
   const handle = await fs.open(filename, 'r');
   try {
     const before = await handle.stat();
-    if (!before.isFile()) throw new Error('Expected a regular file');
-    if (before.size > limit) throw new Error(`File exceeds byte limit ${limit}`);
+    if (!before.isFile()) throw coded('Expected a regular file', 'READ_FAILED');
+    if (before.size > limit) throw coded(`File exceeds byte limit ${limit}`, 'TOO_LARGE');
     const buffer = Buffer.alloc(Math.min(limit + 1, before.size + 1));
     let n = 0;
     while (n < buffer.length) {
@@ -157,12 +158,14 @@ async function limitedRead(filename, limit) {
       if (!r.bytesRead) break;
       n += r.bytesRead;
     }
-    if (n > limit) throw new Error(`File exceeds byte limit ${limit}`);
+    if (n > limit) throw coded(`File exceeds byte limit ${limit}`, 'TOO_LARGE');
     const after = await handle.stat();
     if (n !== before.size || after.size !== before.size || after.mtimeMs !== before.mtimeMs)
-      throw new Error('File changed while being read; retry with a stable source');
-    const text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(buffer.subarray(0, n));
-    if (text.includes('\0')) throw new Error('Binary/NUL content is not supported');
+      throw coded('File changed while being read; retry with a stable source', 'READ_FAILED');
+    let text;
+    try { text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(buffer.subarray(0, n)); }
+    catch { throw coded('Invalid UTF-8 content', 'INVALID_UTF8'); }
+    if (text.includes('\0')) throw coded('Binary/NUL content is not supported', 'BINARY');
     return text;
   } finally { await handle.close(); }
 }
@@ -194,10 +197,12 @@ export class ContextKit {
     if (typeof requested !== 'string' || !requested || requested.length > 4096 || requested.includes('\0')) throw new Error('Invalid path');
     const candidate = path.resolve(this.root, requested);
     if (!within(this.root, candidate)) throw new Error('Path is outside workspace');
-    this.checkRelative(path.relative(this.root, candidate));
+    try { this.checkRelative(path.relative(this.root, candidate)); }
+    catch (error) { if (!error.code) error.code = 'BLOCKED'; throw error; }
     const actual = await fs.realpath(candidate);
     if (!within(this.root, actual)) throw new Error('Symlink resolves outside workspace');
-    this.checkRelative(path.relative(this.root, actual));
+    try { this.checkRelative(path.relative(this.root, actual)); }
+    catch (error) { if (!error.code) error.code = 'BLOCKED'; throw error; }
     return actual;
   }
   async localText(requested, limit = this.config.maxInputBytes) {
@@ -345,10 +350,16 @@ export class ContextKit {
     const sourceOffset = chars(lines.slice(0, start_line - 1).join('')).length + offset;
     const tracking = await this.trackContextOutput(source, registration, { start: sourceOffset, end: sourceOffset + chars(body).length, hasBody: true });
     let currentSourceStatus = 'unavailable';
+    let currentSourceReason;
     try {
       const current = await limitedRead(await this.sourcePath(source.source), this.config.maxInputBytes);
       currentSourceStatus = sha256(current) === source.sha256 ? 'same' : 'changed';
-    } catch { /* A missing or now-blocked source is not evidence for the summary. */ }
+    } catch (error) {
+      currentSourceReason = error.code === 'ENOENT' ? 'missing' :
+        ['EACCES', 'EPERM'].includes(error.code) ? 'access_denied' :
+        error.code === 'BLOCKED' ? 'blocked_by_policy' :
+        error.code === 'TOO_LARGE' ? 'too_large' : 'read_failed';
+    }
     const meta = { snapshot_id: source.id, sha256: source.sha256, file: source.source,
       captured_at: source.createdAt,
       ...(registration.doc ? { context_document: new ContextRegistry(this).publicDocument(registration.doc) } : {}),
@@ -357,6 +368,7 @@ export class ContextKit {
       next_offset: offset + chars(body).length < points.length ? offset + chars(body).length : null,
       page_complete: offset === 0 && chars(body).length === points.length,
       current_source_status: currentSourceStatus,
+      ...(currentSourceStatus === 'unavailable' ? { current_source_reason: currentSourceReason } : {}),
       ...(quote !== undefined ? { quote_match_in_requested_lines: selected.includes(quote) } : {}),
       notice: 'Historical original. A matching quote/hash confirms text identity, NOT truth or that it supports a claim. Offsets count Unicode code points.' };
     const provisionalOutput = format(meta, body);

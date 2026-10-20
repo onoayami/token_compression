@@ -64,6 +64,16 @@ test('source retrieval returns a snapshot, not subsequently edited contents', as
   assert.equal(result.meta.current_source_status, 'changed');
   assert.equal(result.meta.quote_match_in_requested_lines, true);
 });
+test('unavailable current sources expose a stable reason code without paths', async t => {
+  const { kit, root, write } = await fixture(t);
+  await write('spec.txt', 'content\n');
+  const { meta } = parse(await kit.read('spec.txt'));
+  await fs.unlink(path.join(root, 'spec.txt'));
+  const result = parse(await kit.retrieve({ snapshot_id: meta.snapshot_id }));
+  assert.equal(result.meta.current_source_status, 'unavailable');
+  assert.equal(result.meta.current_source_reason, 'missing');
+  assert.equal(JSON.stringify(result.meta).includes(root), false);
+});
 test('a wrong quote is reported false; hash mismatch is an error', async t => {
   const { kit, write } = await fixture(t); await write('spec.txt', 'Deadline: Friday');
   const { meta } = parse(await kit.read('spec.txt'));
