@@ -397,6 +397,36 @@ test('lock write failure closes and removes the lock before rethrowing', async t
   await assert.rejects(() => kit.withCacheLock(async () => {}), /injected lock write failure/);
   assert.equal(await fs.stat(path.join(kit.cache, '.lock')).catch(error => error.code), 'ENOENT');
 });
+test('Windows lock unlink retries sharing violations and permits the next lock', async t => {
+  const { kit } = await fixture(t);
+  kit.lockPlatform = 'win32';
+  const original = kit.unlink;
+  let attempts = 0;
+  kit.unlink = async filename => {
+    attempts++;
+    if (attempts === 1) throw Object.assign(new Error('temporary sharing violation'), { code: 'EPERM' });
+    return original(filename);
+  };
+  await kit.withCacheLock(async () => 'first');
+  assert.equal(await kit.withCacheLock(async () => 'second'), 'second');
+  assert.ok(attempts >= 3);
+  assert.equal(await fs.stat(path.join(kit.cache, '.lock')).catch(error => error.code), 'ENOENT');
+});
+test('POSIX lock unlink permission errors are logged without retrying', async t => {
+  const { kit } = await fixture(t);
+  let attempts = 0;
+  const errors = [];
+  const originalError = console.error;
+  console.error = message => errors.push(message);
+  t.after(() => { console.error = originalError; });
+  kit.unlink = async () => {
+    attempts++;
+    throw Object.assign(new Error('permission denied'), { code: 'EPERM' });
+  };
+  assert.equal(await kit.withCacheLock(async () => 'preserved'), 'preserved');
+  assert.equal(attempts, 1);
+  assert.ok(errors.some(message => message.includes('Cache lock release failed')));
+});
 test('corrupt lock during release does not replace the callback result', async t => {
   const { kit } = await fixture(t);
   const result = await kit.withCacheLock(async () => {

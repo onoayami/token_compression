@@ -27,6 +27,7 @@ const BLOCKED_DIRS = new Set(['.git', '.ssh', '.aws', '.azure', '.gnupg', '.dock
   '.terraform', '.gcloud', 'node_modules', CACHE]);
 const CACHE_LSTAT_CONCURRENCY = 16;
 const WINDOWS_LOCK_RETRY_CODES = new Set(['EACCES', 'EBUSY', 'EPERM']);
+const LOCK_UNLINK_RETRIES = 20;
 export function isRetryableLockError(error, platform = process.platform) {
   return error?.code === 'EEXIST' || (platform === 'win32' && WINDOWS_LOCK_RETRY_CODES.has(error?.code));
 }
@@ -219,6 +220,8 @@ export class ContextKit {
     this.snapshotIndex = new Map();
     this.lockWriter = (handle, owner) => handle.writeFile(JSON.stringify(owner));
     this.lstat = fs.lstat;
+    this.unlink = fs.unlink;
+    this.lockPlatform = process.platform;
     this.readHooks = {};
   }
 
@@ -297,6 +300,25 @@ export class ContextKit {
     try { await fs.writeFile(ignore, '*\n', { flag: 'wx', mode: 0o600 }); }
     catch (error) { if (error.code !== 'EEXIST') throw error; }
   }
+  async unlinkLock(filename, context, throwPermanent = true) {
+    for (let attempt = 0; attempt < LOCK_UNLINK_RETRIES; attempt++) {
+      try {
+        await this.unlink(filename);
+        return true;
+      } catch (error) {
+        if (error.code === 'ENOENT') return true;
+        if (!(this.lockPlatform === 'win32' && isRetryableLockError(error, this.lockPlatform))) {
+          console.error(`Cache lock ${context} failed: ${error.message}`);
+          if (throwPermanent) throw error;
+          return false;
+        }
+        if (attempt + 1 < LOCK_UNLINK_RETRIES)
+          await new Promise(resolve => setTimeout(resolve, 10));
+      }
+    }
+    console.error(`Cache lock ${context} failed after ${LOCK_UNLINK_RETRIES} retries`);
+    return false;
+  }
   async withCacheLock(fn) {
     await this.ensureCache();
     const lockfile = path.join(this.cache, '.lock');
@@ -313,9 +335,9 @@ export class ContextKit {
           try {
             const currentStat = await fs.stat(lockfile);
             const sameFile = currentStat.dev === lockIdentity.dev && currentStat.ino === lockIdentity.ino;
-            if (sameFile) await fs.unlink(lockfile);
+            if (sameFile) await this.unlinkLock(lockfile, 'cleanup', false);
           } catch (cleanupError) {
-            if (cleanupError.code !== 'ENOENT' && !isRetryableLockError(cleanupError))
+            if (cleanupError.code !== 'ENOENT')
               console.error(`Cache lock cleanup failed: ${cleanupError.message}`);
           }
           handle = undefined;
@@ -323,7 +345,7 @@ export class ContextKit {
         }
         break;
       } catch (error) {
-        if (!isRetryableLockError(error)) throw error;
+        if (!isRetryableLockError(error, this.lockPlatform)) throw error;
         try {
           const raw = await fs.readFile(lockfile, 'utf8');
           let current;
@@ -345,18 +367,18 @@ export class ContextKit {
                 }
                 await fs.rename(lockfile, reclaim);
                 const reclaimed = JSON.parse(await fs.readFile(reclaim, 'utf8'));
-                await fs.unlink(reclaim);
+                if (!await this.unlinkLock(reclaim, 'reclaim')) continue;
                 if (reclaimed.token !== current.token) {
                   console.error('Cache lock ownership changed during reclaim; retrying');
                   continue;
                 }
               } catch (reclaimError) {
-                if (reclaimError.code !== 'ENOENT' && !isRetryableLockError(reclaimError)) throw reclaimError;
+                if (reclaimError.code !== 'ENOENT' && !isRetryableLockError(reclaimError, this.lockPlatform)) throw reclaimError;
               }
             }
           }
         } catch (staleError) {
-          if (staleError.code !== 'ENOENT' && !isRetryableLockError(staleError)) throw staleError;
+          if (staleError.code !== 'ENOENT' && !isRetryableLockError(staleError, this.lockPlatform)) throw staleError;
         }
         await new Promise(resolve => setTimeout(resolve, 10));
       }
@@ -370,9 +392,9 @@ export class ContextKit {
       try {
         const current = JSON.parse(await fs.readFile(lockfile, 'utf8'));
         if (current.token === owner.token && current.pid === owner.pid && current.hostname === owner.hostname)
-          await fs.unlink(lockfile);
+          await this.unlinkLock(lockfile, 'release', false);
       } catch (error) {
-        if (error.code !== 'ENOENT' && !isRetryableLockError(error))
+        if (error.code !== 'ENOENT')
           console.error(`Cache lock release failed: ${error.message}`);
       }
     }
