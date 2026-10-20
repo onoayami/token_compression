@@ -17,6 +17,18 @@ async function fixture(t, handler) {
   const send = (request, opts = {}) => fetch(server.endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${server.token}`, ...opts.headers }, body: JSON.stringify(request) });
   return { server, root, send };
 }
+function rawPost(endpoint, headers, writeBody) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const request = http.request(endpoint, { method: 'POST', headers }, response => {
+      settled = true;
+      response.resume();
+      resolve({ status: response.statusCode, request });
+    });
+    request.on('error', error => { if (!settled) reject(error); });
+    writeBody(request);
+  });
+}
 test('loopback MCP supports initialization, notifications, tools and actual compressed source retrieval', async t => {
   const { server, send } = await fixture(t);
   assert.equal(new URL(server.endpoint).hostname, '127.0.0.1');
@@ -59,6 +71,34 @@ test('HTTP path, method, media type, JSON parse, batch and size limits stay expl
   const batch = await send([rpc(1, 'ping')]); assert.equal(batch.status, 400); assert.equal((await batch.json()).error.code, -32600);
   assert.equal((await send({ padding: 'x'.repeat(65536) })).status, 413);
   assert.equal((await send(rpc(2, 'ping'), { headers: { 'Content-Type': 'application/json; charset=utf-8' } })).status, 200);
+});
+test('oversized HTTP requests are rejected immediately and never reach the handler', async t => {
+  let declaredCalls = 0;
+  const { server: declaredServer } = await fixture(t, async () => {
+    declaredCalls++; return { jsonrpc: '2.0', result: {} };
+  });
+  const declared = await rawPost(declaredServer.endpoint, {
+    Authorization: `Bearer ${declaredServer.token}`, 'Content-Type': 'application/json', 'Content-Length': '65537',
+  }, request => request.end('{}'));
+  assert.equal(declared.status, 413);
+  assert.equal(declaredCalls, 0);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(declared.request.destroyed, true);
+
+  let chunkedCalls = 0;
+  const { server: chunkedServer } = await fixture(t, async () => {
+    chunkedCalls++; return { jsonrpc: '2.0', result: {} };
+  });
+  const chunked = await rawPost(chunkedServer.endpoint, {
+    Authorization: `Bearer ${chunkedServer.token}`, 'Content-Type': 'application/json',
+  }, request => {
+    request.write(Buffer.alloc(65535, 0x78));
+    setImmediate(() => request.end('xx'));
+  });
+  assert.equal(chunked.status, 413);
+  assert.equal(chunkedCalls, 0);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(chunked.request.destroyed, true);
 });
 test('requests are serialized and handler errors do not kill the local server', async t => {
   const seen = [], { send } = await fixture(t, async request => {
