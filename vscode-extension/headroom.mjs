@@ -114,6 +114,7 @@ export class HeadroomManager {
   #home;
   #appName;
   #onState;
+  #kill;
   #child = null;
   #auth = null;
   #stopping = false;
@@ -135,6 +136,7 @@ export class HeadroomManager {
     home = os.homedir(),
     appName = 'Visual Studio Code',
     onState = () => {},
+    kill = process.kill.bind(process),
   } = {}) {
     if (!storagePath) throw new TypeError('Context Kit global storage is required.');
     this.#storagePath = storagePath;
@@ -150,6 +152,7 @@ export class HeadroomManager {
     this.#home = home;
     this.#appName = appName;
     this.#onState = onState;
+    this.#kill = kill;
   }
 
   get command() { return this.#command; }
@@ -240,7 +243,52 @@ export class HeadroomManager {
     }
   }
 
-  async #startNow() {
+  // A proxy started by an earlier extension host (window reload, extension update, crash) keeps
+  // listening after that host is gone. Only a process whose command line is our managed
+  // `headroom wrap vscode --port <port>`, its descendants, or the proxy that wrapper spawns from the same venv
+  // (`<venv>/bin/python -m headroom.cli proxy --port <port>`, which outlives the wrapper as an orphan) is recognised.
+  // Foreign processes are never touched.
+  async #findManagedProxy() {
+    if (this.#platform !== 'darwin') return null;
+    const options = noOutputOptions({ cwd: this.#root, env: this.#environment() });
+    const listing = await this.#exec('/usr/sbin/lsof', ['-nP', `-iTCP:${this.#port}`, '-sTCP:LISTEN', '-t'], options).catch(() => null);
+    const listeners = String(listing?.stdout || '').split(/\s+/).filter(value => /^\d+$/.test(value)).map(Number);
+    const escape = value => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const bin = path.dirname(this.#command);
+    const signatures = [
+      new RegExp(`^(?:${escape(bin)}/python\\S* )?${escape(this.#command)} wrap vscode --port ${this.#port} `),
+      new RegExp(`^${escape(bin)}/python(?:3(?:\\.\\d+)?)? -m headroom\\.cli proxy --port ${this.#port} `),
+    ];
+    for (const listener of listeners) {
+      let pid = listener;
+      for (let depth = 0; depth < 4 && pid > 1; depth++) {
+        const result = await this.#exec('/bin/ps', ['-o', 'ppid=,command=', '-p', String(pid)], options).catch(() => null);
+        const match = String(result?.stdout || '').trim().match(/^(\d+)\s+(.*)$/s);
+        if (!match) break;
+        if (signatures.some(signature => signature.test(`${match[2]} `))) return { pid, listener };
+        pid = Number(match[1]);
+      }
+    }
+    return null;
+  }
+
+  #alive(pid) {
+    try { this.#kill(pid, 0); return true; } catch (error) { return error?.code === 'EPERM'; }
+  }
+
+  async #terminatePid({ pid, listener }) {
+    for (const [signal, wait] of [['SIGINT', 5000], ['SIGTERM', 2000], ['SIGKILL', 1000]]) {
+      const targets = [pid, listener].filter(target => this.#alive(target));
+      if (!targets.length) break;
+      for (const target of targets) {
+        try { this.#kill(target, signal); } catch { /* The process may already have exited. */ }
+      }
+      for (let waited = 0; waited < wait && targets.some(target => this.#alive(target)); waited += 100) await delay(100);
+    }
+    for (let attempt = 0; attempt < 20 && await this.#healthy(); attempt++) await delay(100);
+  }
+
+  async #startNow({ takeover = true } = {}) {
     if (this.#platform !== 'darwin') throw Object.assign(new Error('Automatic compression is supported on macOS only.'), { code: 'UNSUPPORTED_PLATFORM' });
     this.#assertSupportedApp();
     if (this.#child) {
@@ -250,7 +298,12 @@ export class HeadroomManager {
     await this.#assertVersion();
     await this.#authenticated();
     if (!this.#child && await this.#healthy()) {
-      throw Object.assign(new Error('Headroom port is already in use by another process.'), { code: 'HEADROOM_PORT_IN_USE' });
+      const leftover = await this.#findManagedProxy();
+      if (!leftover) throw Object.assign(new Error('Headroom port is already in use by another process.'), { code: 'HEADROOM_PORT_IN_USE' });
+      // Automatic restarts share a proxy another window just started instead of fighting over the port.
+      if (!takeover) return { started: false, reused: true, shared: true, port: this.#port };
+      await this.#terminatePid(leftover);
+      if (await this.#healthy()) throw Object.assign(new Error('Headroom port is already in use by another process.'), { code: 'HEADROOM_PORT_IN_USE' });
     }
     const env = this.#environment();
     const child = this.#spawn(this.#command, ['wrap', 'vscode', '--port', String(this.#port), '--settings-file', this.#settingsFile], {
@@ -265,7 +318,7 @@ export class HeadroomManager {
       if (!this.#stopping && this.#enabled && this.#restartCount < MAX_RESTARTS) {
         this.#restartCount++;
         void delay(this.#restartCount * 500).then(() => {
-          if (this.#enabled) void this.start();
+          if (this.#enabled) void this.#queue(() => this.#startNow({ takeover: false })).catch(() => {});
         });
       }
       this.#onState({ state: 'stopped', code: child.exitCode ?? null });
@@ -280,34 +333,43 @@ export class HeadroomManager {
     }
   }
 
+  #queue(step) {
+    this.#transition = this.#transition.catch(() => {}).then(step);
+    return this.#transition;
+  }
+
   start() {
     this.#enabled = true;
-    this.#transition = this.#transition.catch(() => {}).then(() => this.#startNow());
-    return this.#transition;
+    return this.#queue(() => this.#startNow());
   }
 
   restart() {
     this.#enabled = true;
     this.#restartCount = 0;
-    this.#transition = this.#transition.catch(() => {}).then(() => this.#stopNow()).then(() => this.#startNow());
-    return this.#transition;
+    return this.#queue(() => this.#stopNow().then(() => this.#startNow()));
   }
 
-  stop() {
+  stop({ leftover = true } = {}) {
     this.#enabled = false;
     this.#restartCount = 0;
-    this.#transition = this.#transition.catch(() => {}).then(() => this.#stopNow()).then(() => {
+    return this.#queue(async () => {
+      await this.#stopNow();
+      // Fail closed even when the proxy was left behind by an earlier extension host.
+      if (leftover && await this.#healthy()) {
+        const found = await this.#findManagedProxy();
+        if (found) await this.#terminatePid(found);
+      }
       this.#onState({ state: 'stopped', failClosed: true });
       return { stopped: true, failClosed: true };
     });
-    return this.#transition;
   }
 
   async status() {
     const authenticated = await this.#authenticated().then(() => true).catch(() => false);
     const running = Boolean(this.#child) && await this.#healthy();
-    const portInUse = !this.#child && await this.#healthy();
-    return { authenticated, authenticating: Boolean(this.#auth), running, portInUse, owned: running, enabled: this.#enabled, port: this.#port };
+    const portBusy = !this.#child && await this.#healthy();
+    const leftover = portBusy && Boolean(await this.#findManagedProxy());
+    return { authenticated, authenticating: Boolean(this.#auth), running, portInUse: portBusy && !leftover, leftover, owned: running, enabled: this.#enabled, port: this.#port };
   }
 
   async cancelAuthentication() {
@@ -424,6 +486,7 @@ export class HeadroomManager {
 
   async dispose() {
     await this.cancelAuthentication();
-    await this.stop();
+    // Closing one window must not kill a proxy another window may be sharing.
+    await this.stop({ leftover: false });
   }
 }

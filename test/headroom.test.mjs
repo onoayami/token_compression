@@ -44,8 +44,19 @@ async function fixture(t, options = {}) {
   const calls = [];
   let child, activeChild;
   let healthy = options.healthy !== false;
+  let existingHealthy = Boolean(options.existingHealthy);
+  const alive = new Set(Object.keys(options.processes || {}).map(Number));
   const exec = async (command, args, execOptions) => {
     calls.push({ type: 'exec', command, args, options: execOptions });
+    if (command === '/usr/sbin/lsof') {
+      if (!options.listeners?.length) throw Object.assign(new Error('no listener'), { code: 1 });
+      return { stdout: options.listeners.filter(pid => alive.has(pid)).join('\n'), stderr: '' };
+    }
+    if (command === '/bin/ps') {
+      const pid = Number(args.at(-1));
+      if (!alive.has(pid)) throw Object.assign(new Error('no process'), { code: 1 });
+      return { stdout: `  ${options.processes[pid]}\n`, stderr: '' };
+    }
     if (args[0] === '--version' && command.endsWith('python3')) return { stdout: options.pythonVersions?.[command] ?? options.pythonVersion ?? 'Python 3.12.0', stderr: '' };
     if (args[0] === '--version') return { stdout: options.version ?? 'headroom, version 0.41.0', stderr: '' };
     if (args[0] === 'copilot-auth') return { stdout: options.authOutput ?? 'Status: logged in', stderr: '' };
@@ -59,7 +70,7 @@ async function fixture(t, options = {}) {
     return child;
   };
   const manager = new HeadroomManager({
-    command: '/managed/headroom',
+    command: options.command || '/managed/headroom',
     storagePath,
     settingsFile: '/Users/test/Library/Application Support/Code/User/settings.json',
     root: '/workspace',
@@ -68,7 +79,7 @@ async function fixture(t, options = {}) {
     exec,
     spawn,
     fetchImpl: async () => ({
-      ok: (options.existingHealthy || activeChild) && healthy,
+      ok: (existingHealthy || activeChild) && healthy,
       json: async () => options.healthBody || {
         service: 'headroom-proxy',
         version: '0.41.0',
@@ -78,8 +89,18 @@ async function fixture(t, options = {}) {
       },
     }),
     fsImpl: options.fsImpl || fs,
+    kill: (pid, signal) => {
+      if (!alive.has(pid)) throw Object.assign(new Error('no such process'), { code: 'ESRCH' });
+      if (signal === 0) return true;
+      calls.push({ type: 'kill', pid, signal });
+      if (!options.ignoreSignals) {
+        alive.delete(pid);
+        if (![...alive].some(other => options.listeners?.includes(other))) existingHealthy = false;
+      }
+      return true;
+    },
   });
-  return { manager, paths, calls, setHealthy(value) { healthy = value; }, get child() { return child; } };
+  return { manager, paths, calls, alive, setHealthy(value) { healthy = value; }, setExistingHealthy(value) { existingHealthy = value; }, get child() { return child; } };
 }
 
 test('Headroom version and authentication parsing are fixed and non-sensitive', () => {
@@ -293,6 +314,101 @@ test('an already healthy port is reported as in use without spawning or killing 
   const status = await state.manager.status();
   assert.equal(status.portInUse, true);
   assert.equal(status.owned, false);
+});
+
+const SETTINGS = '/Users/test/Library/Application Support/Code/User/settings.json';
+const leftoverProxy = {
+  existingHealthy: true,
+  listeners: [4321],
+  processes: {
+    4321: `999 /managed/python3.12 /managed/headroom wrap vscode --port 8787 --settings-file ${SETTINGS}`,
+  },
+};
+
+test('a proxy left behind by an earlier Context Kit host is taken over instead of reported as a conflict', async t => {
+  const state = await fixture(t, leftoverProxy);
+  const before = await state.manager.status();
+  assert.equal(before.leftover, true);
+  assert.equal(before.portInUse, false);
+  const result = await state.manager.start();
+  assert.equal(result.started, true);
+  assert.deepEqual(state.calls.filter(call => call.type === 'kill').map(call => [call.pid, call.signal]), [[4321, 'SIGINT']]);
+  assert.equal(state.calls.filter(call => call.type === 'spawn').length, 1);
+  await state.manager.stop();
+});
+
+test('re-authentication restart takes over a leftover proxy', async t => {
+  const state = await fixture(t, leftoverProxy);
+  await state.manager.restart();
+  assert.equal(state.calls.filter(call => call.type === 'kill').length, 1);
+  assert.equal(state.calls.filter(call => call.type === 'spawn').length, 1);
+  await state.manager.stop();
+});
+
+test('the managed wrapper is found through the parent of the listening process', async t => {
+  const state = await fixture(t, {
+    existingHealthy: true,
+    listeners: [5000],
+    processes: {
+      5000: '4321 /managed/venv/bin/python3.12 -m uvicorn headroom.proxy:app --port 8787',
+      4321: `1 /managed/python3.12 /managed/headroom wrap vscode --port 8787 --settings-file ${SETTINGS}`,
+    },
+  });
+  await state.manager.start();
+  assert.deepEqual(state.calls.filter(call => call.type === 'kill').map(call => call.pid).sort(), [4321, 5000]);
+  await state.manager.stop();
+});
+
+test('an orphaned proxy whose wrapper already exited is recognised by the managed venv command', async t => {
+  const command = '/Users/test/Library/Application Support/Code/User/globalStorage/x/headroom/venv/bin/headroom';
+  const state = await fixture(t, {
+    command,
+    existingHealthy: true,
+    listeners: [39115],
+    processes: { 39115: `1 ${path.posix.dirname(command)}/python -m headroom.cli proxy --port 8787 --workers 1 --mode token` },
+  });
+  assert.equal((await state.manager.status()).leftover, true);
+  await state.manager.restart();
+  assert.deepEqual(state.calls.filter(call => call.type === 'kill').map(call => call.pid), [39115]);
+  assert.equal(state.calls.filter(call => call.type === 'spawn').length, 1);
+  await state.manager.stop();
+});
+
+test('foreign or differently configured processes on the port are never killed', async t => {
+  for (const command of [
+    '1 /usr/local/bin/headroom wrap vscode --port 8787',
+    '1 /managed/headroom wrap vscode --port 87870',
+    '1 /usr/bin/python3 -m http.server 8787',
+    '1 /other/venv/bin/python -m headroom.cli proxy --port 8787 --mode token',
+    '1 /managed/python -m headroom.cli proxy --port 87870',
+  ]) {
+    const state = await fixture(t, { existingHealthy: true, listeners: [4321], processes: { 4321: command } });
+    await assert.rejects(() => state.manager.start(), error => error.code === 'HEADROOM_PORT_IN_USE');
+    await state.manager.stop();
+    assert.equal(state.calls.filter(call => call.type === 'kill').length, 0, command);
+    assert.equal(state.calls.filter(call => call.type === 'spawn').length, 0, command);
+    assert.equal((await state.manager.status()).portInUse, true);
+  }
+});
+
+test('stop is fail-closed for a leftover proxy but closing a window leaves it for other windows', async t => {
+  const disposed = await fixture(t, leftoverProxy);
+  await disposed.manager.dispose();
+  assert.equal(disposed.calls.filter(call => call.type === 'kill').length, 0);
+  const stopped = await fixture(t, leftoverProxy);
+  await stopped.manager.stop();
+  assert.deepEqual(stopped.calls.filter(call => call.type === 'kill').map(call => call.signal), ['SIGINT']);
+});
+
+test('automatic restarts share a proxy another window started instead of killing it', async t => {
+  const state = await fixture(t, { ...leftoverProxy, existingHealthy: false });
+  await state.manager.start();
+  state.setExistingHealthy(true);
+  state.child.crash(1);
+  await new Promise(resolve => setTimeout(resolve, 800));
+  assert.equal(state.calls.filter(call => call.type === 'kill').length, 0);
+  assert.equal(state.calls.filter(call => call.type === 'spawn').length, 1);
+  await state.manager.dispose();
 });
 
 test('a health-lost owned child is stopped before a replacement is spawned', async t => {
