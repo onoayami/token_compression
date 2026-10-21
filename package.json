@@ -10,5 +10,6 @@
   },
   "scripts": {
     "test": "node --test test/core.test.mjs test/server.test.mjs test/cli.test.mjs test/stats.test.mjs test/context.test.mjs test/setup.test.mjs test/http.test.mjs test/extension.test.mjs"
+    ,"test:report": "node scripts/write-test-report.mjs"
   }
 }

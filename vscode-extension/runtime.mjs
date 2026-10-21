@@ -29,9 +29,13 @@ const fenced = value => {
   const runs = value.match(/`+/g) || [], width = Math.max(3, ...runs.map(s => s.length + 1));
   const fence = '`'.repeat(width); return `${fence}text\n${value}\n${fence}\n`;
 };
-export async function activate(context, vscode, { kitRoot = path.join(context.extensionPath, 'kit') } = {}) {
+export async function activate(context, vscode, {
+  kitRoot = path.join(context.extensionPath, 'kit'),
+  startServer = startLocalServer,
+  exposeLifecycle = false,
+} = {}) {
   const moduleAt = name => import(pathToFileURL(path.join(kitRoot, 'src', name)).href);
-  const [{ ContextKit }, { createHandler }, { planSetup, applySetup }, { formatContextOverview }, { formatStats }] = await Promise.all([
+  const [{ ContextKit }, { createHandler }, { planSetup, applySetup }, { formatContextOverview, ContextRegistry }, { formatStats }] = await Promise.all([
     moduleAt('core.mjs'), moduleAt('server.mjs'), moduleAt('setup.mjs'), moduleAt('context.mjs'), moduleAt('report.mjs'),
   ]);
   const changed = new vscode.EventEmitter();
@@ -42,21 +46,30 @@ export async function activate(context, vscode, { kitRoot = path.join(context.ex
     if (!vscode.workspace.isTrusted) throw new Error('信頼済みの作業フォルダで実行してください。');
     if (vscode.env.remoteName) throw new Error('この簡単導入版はローカルのデスクトップ版VS Code向けです。WSL・SSH・Dev Containerは従来のCLI版をご利用ください。');
   };
-  const stop = async () => { const current = server; server = null; kit = null; root = null; changed.fire(); await current?.close(); };
-  const start = async selected => {
+  let transition = Promise.resolve();
+  const stopNow = async () => { const current = server; server = null; kit = null; root = null; changed.fire(); await current?.close(); };
+  const stop = () => {
+    transition = transition.catch(() => {}).then(stopNow);
+    return transition;
+  };
+  const startNow = async selected => {
     assertLocal(); if (!permittedRoot(selected)) throw new Error('現在開いている作業フォルダを選んでください。');
     if (root === selected && server) return;
-    await stop();
+    await stopNow();
     kit = await ContextKit.create(selected);
     const handle = createHandler(kit);
-    server = await startLocalServer(async request => {
+    server = await startServer(async request => {
       assertLocal();
       if (!permittedRoot(selected)) throw new Error('作業フォルダが閉じられました。');
       return handle(request);
     }); root = selected;
     try { httpDefinition(vscode, server.endpoint, server.token); }
-    catch (e) { await stop(); throw e; }
+    catch (e) { await stopNow(); throw e; }
     changed.fire();
+  };
+  const start = selected => {
+    transition = transition.catch(() => {}).then(() => startNow(selected));
+    return transition;
   };
   const requireKit = () => { assertLocal(); if (!kit) throw new Error('先にチャットで @contextkit 初期設定 と入力してください。'); return kit; };
   const selectRoot = async () => {
@@ -112,15 +125,20 @@ export async function activate(context, vscode, { kitRoot = path.join(context.ex
     await vscode.window.showTextDocument(await vscode.workspace.openTextDocument({ language: 'markdown', content: text })); return text;
   };
   const openDoc = async id => {
-    const value = requireKit(), raw = await value.localText('project-context/catalog.json', 65536);
-    const entry = JSON.parse(raw.text).documents.find(d => d.id === id);
+    const value = requireKit(), catalog = await new ContextRegistry(value).catalog();
+    const entry = catalog?.documents.find(d => d.id === id);
     if (!entry) throw new Error('資料が登録されていません。');
     const filename = await value.sourcePath(entry.path);
     await vscode.window.showTextDocument(vscode.Uri.file(filename));
   };
   const safeCommand = callback => async (...args) => {
     try { return await callback(...args); }
-    catch (e) { vscode.window.showErrorMessage(`Context Kit: ${e.message}`); return { error: e.message }; }
+    catch (e) {
+      console.error(`Context Kit command failed: ${e.message}`);
+      const message = 'Context Kitの処理を完了できませんでした。設定と対象ファイルを確認してください。';
+      vscode.window.showErrorMessage(message);
+      return { error: message };
+    }
   };
   for (const [name, callback] of Object.entries({ setup, overview: showOverview, stats: showStats,
     openGlossary: () => openDoc('glossary'), openDesign: () => openDoc('design'),
@@ -147,7 +165,10 @@ export async function activate(context, vscode, { kitRoot = path.join(context.ex
       } else if (intent === 'overview') stream.markdown(fenced(formatContextOverview(JSON.parse(await requireKit().context()))));
       else if (intent === 'stats') stream.markdown(fenced(formatStats(await requireKit().stats())));
       else { stream.markdown('初期設定専用の窓口です。**@contextkit 初期設定**、**@contextkit 状況**、**@contextkit 圧縮状況** が使えます。一般の実装や相談は通常のCopilotへ戻って依頼してください。'); stream.button({ command: 'contextkit.setup', title: '初期設定を始める' }); }
-    } catch (e) { stream.markdown(`設定・確認を完了できませんでした。${e.message}\n\nファイルを確認してから、もう一度実行してください。`); }
+    } catch (e) {
+      console.error(`Context Kit chat failed: ${e.message}`);
+      stream.markdown('設定・確認を完了できませんでした。ファイルと設定を確認してから、もう一度実行してください。');
+    }
     return {};
   });
   context.subscriptions.push(participant, changed);
@@ -158,5 +179,5 @@ export async function activate(context, vscode, { kitRoot = path.join(context.ex
   }
   const dispose = async () => { if (disposed) return; disposed = true; await stop(); };
   context.subscriptions.push({ dispose: () => { void dispose(); } });
-  return { dispose };
+  return exposeLifecycle ? { dispose, start, stop } : { dispose };
 }

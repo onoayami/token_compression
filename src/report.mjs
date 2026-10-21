@@ -5,6 +5,7 @@ export function formatStats(stats) {
   return [
     '圧縮状況レポート（このルートのローカル資料のみ）',
     `読み取り ${number(stats.read_calls)}回 / 原文確認 ${number(stats.retrieve_calls)}回`,
+    `統計行の不正値: ${number(stats.invalid_metric_rows)}行 / 完全: ${stats.metrics_complete ? 'はい' : 'いいえ'}`,
     '',
     '【1. 資料そのものの変化】',
     `バイト数: ${number(c.original_bytes)} → ${number(c.compacted_bytes)} bytes`,
@@ -14,8 +15,8 @@ export function formatStats(stats) {
     `計測対象: ${number(c.measured_read_calls)}回（旧形式で未計測: ${number(c.legacy_unmeasured_read_calls)}回）`,
     '',
     '【2. 説明・原文の再取得も含めた参考比較】',
-    `読み取り時の返却テキスト（説明込み）: ${number(r.read_response_bytes_including_metadata)} bytes`,
-    `原文確認の返却テキスト（説明込み）: ${number(r.retrieval_response_bytes_including_metadata)} bytes`,
+    `読み取り時の返却テキスト（説明込み・統計状態欄を除く）: ${number(r.read_response_bytes_including_metadata)} bytes`,
+    `原文確認の返却テキスト（説明込み・統計状態欄を除く）: ${number(r.retrieval_response_bytes_including_metadata)} bytes`,
     `共通知識の一覧の返却テキスト: ${number(r.context_index_response_bytes || 0)} bytes`,
     `返却テキスト合計: ${number(r.total_response_bytes)} bytes`,
     `元資料全文との参考差: ${number(r.reference_byte_delta_vs_original_full_text)} bytes / ${percent(r.reference_reduction_percent_vs_original_full_text)}`,

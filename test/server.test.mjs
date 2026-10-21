@@ -6,7 +6,8 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { ContextKit } from '../src/core.mjs';
-import { createHandler, TOOLS } from '../src/server.mjs';
+import { createHandler, PublicError, TOOLS, publicToolError } from '../src/server.mjs';
+import { isMainEntry, nodeVersionError } from '../src/bin-check.mjs';
 async function setup(t) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'context-kit-rpc-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
@@ -32,6 +33,44 @@ test('MCP tool reads, retrieval, and failures stay structured', async t => {
   const bad = await handle(rpc(4, 'tools/call', { name: 'kit_read', arguments: { path: '../a.txt' } }));
   assert.equal(bad.result.isError, true);
 });
+test('MCP tool errors do not expose absolute paths', async t => {
+  const { handle, root } = await setup(t); await initialize(handle);
+  const original = console.error; const errors = [];
+  console.error = message => errors.push(message);
+  t.after(() => { console.error = original; });
+  const result = await handle(rpc(5, 'tools/call', { name: 'kit_read', arguments: { path: 'missing.txt' } }));
+  const text = result.result.content[0].text;
+  assert.equal(text, 'FILE_NOT_FOUND: File not found');
+  assert.ok(!text.includes(root)); assert.ok(!text.includes(os.tmpdir()));
+  assert.ok(errors.some(message => message.includes(path.join(root, 'missing.txt'))));
+});
+test('MCP only exposes allowlisted PublicError messages', () => {
+  assert.equal(publicToolError(new PublicError('BLOCKED', 'internal blocked detail')), 'BLOCKED: Path blocked by policy');
+  assert.equal(publicToolError(new Error('/private/secret.txt')), 'CONTEXT_KIT_ERROR: Operation failed');
+});
+test('MCP public error codes use fixed messages without request data', async () => {
+  const requests = [
+    ['kit_read', { path: 'blocked.txt' }, new PublicError('BLOCKED', 'blocked.txt')],
+    ['kit_source', { snapshot_id: 'bad-id' }, new PublicError('INVALID_ARGUMENT', '/tmp/private.txt')],
+    ['kit_stats', {}, new PublicError('TOO_LARGE', 'limit=1024')],
+    ['kit_context', {}, new PublicError('CONTEXT_KIT_ERROR', '/Users/secret/body')],
+  ];
+  for (const [name, args, failure] of requests) {
+    const handler = createHandler({
+      read: async () => { throw failure; },
+      retrieve: async () => { throw failure; },
+      stats: async () => { throw failure; },
+      context: async () => { throw failure; },
+    });
+    await handler({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18' } });
+    const response = await handler({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name, arguments: args } });
+    const text = response.result.content[0].text;
+    assert.match(text, /^(?:BLOCKED|INVALID_ARGUMENT|TOO_LARGE|CONTEXT_KIT_ERROR): /);
+    assert.ok(!text.includes('blocked.txt'));
+    assert.ok(!text.includes('/tmp'));
+    assert.ok(!text.includes('/Users'));
+  }
+});
 test('MCP unknown methods, tools, parameters and invalid types are rejected', async t => {
   const { handle } = await setup(t); await initialize(handle);
   assert.equal((await handle(rpc(2, 'unknown'))).error.code, -32601);
@@ -44,6 +83,7 @@ test('MCP unknown methods, tools, parameters and invalid types are rejected', as
 test('tool schemas explicitly describe side effects and only four tools are exposed', () => {
   assert.equal(TOOLS.length, 4);
   for (const tool of TOOLS) { assert.equal(tool.annotations.destructiveHint, false); assert.equal(tool.inputSchema.additionalProperties, false); }
+  assert.equal(TOOLS.find(tool => tool.name === 'kit_source').inputSchema.properties.expected_sha256.pattern, '^[0-9a-fA-F]{64}$');
 });
 test('real stdio process speaks newline-delimited JSON-RPC with clean stdout', async t => {
   const { root } = await setup(t);
@@ -63,4 +103,21 @@ test('real stdio process speaks newline-delimited JSON-RPC with clean stdout', a
   const replies = stdout.trim().split('\n').map(JSON.parse);
   assert.deepEqual(replies.map(r => r.id), [1, 2, 3]);
   assert.match(replies[2].result.content[0].text, /Deadline: Friday/);
+});
+test('server entrypoint works through a symlink and missing argv paths are safe', async t => {
+  const { root } = await setup(t);
+  const target = fileURLToPath(new URL('../src/server.mjs', import.meta.url));
+  const link = path.join(root, 'server-link.mjs');
+  try { await fs.symlink(target, link); }
+  catch (error) { if (['EPERM', 'EACCES'].includes(error.code)) { t.skip('Symlink privilege unavailable'); return; } throw error; }
+  const child = spawn(process.execPath, [link, '--root', root], { stdio: ['pipe', 'pipe', 'pipe'] });
+  let stdout = '', stderr = ''; child.stdout.on('data', data => stdout += data); child.stderr.on('data', data => stderr += data);
+  const done = new Promise(resolve => child.on('close', code => resolve({ code, stderr })));
+  child.stdin.end(JSON.stringify(rpc(1, 'ping')) + '\n');
+  const result = await done; assert.equal(result.code, 0, result.stderr); assert.deepEqual(JSON.parse(stdout).result, {});
+  assert.equal(isMainEntry('/does/not/exist', import.meta.url), false);
+});
+test('Node version check has a stable result for supported and old majors', () => {
+  assert.equal(nodeVersionError('20.0.0'), null);
+  assert.match(nodeVersionError('19.9.0'), /Node\.js 20/);
 });

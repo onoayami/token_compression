@@ -52,7 +52,7 @@ Marketplaceには未公開です。配布ファイルは [GitHub Releases](https
 - CLI版・ソースの改造はNode.js **20以上**。実行時の追加パッケージや `npm install` は不要です。
 - 独自の外部AI API・クラウドサービスへは接続しません。拡張版はPC内の127.0.0.1で認証付きのMCP接続を提供し、CLI版はstdioを使います。独自APIキーは不要です。
 - **要約・原文確認を行う Copilot の利用は、通常どおり Copilot の利用量に含まれます。無料・無制限になるものではありません。**
-- OS依存を小さくした実装ですが、実際にテストしたのは Linux / Node.js 24 です。Windows・macOS・実際の VS Code 接続はご友人の環境で確認してください。
+- OS依存を小さくした実装ですが、実際にローカル確認したのは macOS / Node.js 24 です。Linux・Windows・Node.js 20/22/24はCIで検証する構成ですが、CI実行結果がない環境を確認済みとは扱いません。実際のVS Code接続も未検証です。
 
 ## 開発者・CLI向け：単体で動かす
 
@@ -64,6 +64,8 @@ npm test
 node src/cli.mjs read examples/sample.log
 ```
 
+同梱の `.vscode/mcp.json` と `integration/mcp.vscode.example.json` は、`PATH` に `node` がある環境向けの設定例です。環境依存を避ける場合は `node src/cli.mjs config` で生成した設定を使ってください。
+
 先頭の `CONTEXT_KIT` 行に保存版の `snapshot_id` と `sha256` が表示されます。
 表示された**実際の値**を使って原文の1〜8行を確認できます。
 
@@ -74,6 +76,7 @@ node src/cli.mjs context --format text
 ```
 
 `<snapshot_id>` は説明用の置き場所です。山括弧ごと入力せず、実際のIDへ置き換えてください。
+保存ファイル内のSHA-256は偶発的な破損検出に使う自己申告値です。改ざん対策には `kit_read` が返したSHA-256を呼び出し側で保持し、`kit_source` の `expected_sha256`（CLIでは `--sha256`）へ指定してください。照合できた場合は `integrity_status` が `matched-external-expected-hash`、指定しない場合は `self-reported-only` です。
 不要になったデモの保存版を削除するには、同じルートを指定して `node src/cli.mjs purge` を使います。元ファイルは消えません。
 
 ## CLI方式でVS Code / Copilot へ接続する
@@ -106,6 +109,15 @@ node src/cli.mjs config --root "/absolute/path/to/project" --format portable
 
 設定先が不明なら VS Code の `MCP: Add Server` で Command (stdio) を選び、生成結果の command と args を登録します。
 起動時の信頼確認・ツール実行許可は、内容を読んでから承認してください。組織の管理設定で MCP が制限される場合もあります。
+
+Node が見つからない場合は `node --version` と `node -p "process.execPath"` で、実行環境と絶対パスを確認してください。
+
+### 困ったとき
+
+- UTF-8、または BOM付きUTF-16（LE/BE）以外のログ、NULを含むファイル、読み取り中に変化するファイルは拒否されます。ログを一時コピーしてから読み、必要ならUTF-8またはBOM付きUTF-16へ変換してください。`source_encoding` と、デコード後テキストをUTF-8化したSHA-256を返します。
+- 出力記録が壊れた場合は、他の処理が動いていないことを確認して `node src/cli.mjs purge --root "/absolute/path/to/project"` を実行し、必要な資料を読み直してください。
+- Windowsで長いパスが必要な場合は、管理者の方針を確認したうえでレジストリの `LongPathsEnabled` を有効にし、再起動後に再実行してください。組織管理下の端末では変更できない場合があります。
+- 統計は生涯累積ではありません。約1 MiBを超えた状態で次の統計行を書き込むと、過去の統計を全件破棄してその行から再開します。必要に応じて `purge` で明示的にリセットしてください。
 
 ### 3. 引き継ぎ用プロンプトを配置
 

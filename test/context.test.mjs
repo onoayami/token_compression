@@ -3,11 +3,12 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
+import { randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { ContextKit } from '../src/core.mjs';
-import { validateCatalog, mergeRanges } from '../src/context.mjs';
+import { ContextRegistry, validateCatalog, mergeRanges } from '../src/context.mjs';
 import { createHandler } from '../src/server.mjs';
 const exec = promisify(execFile);
 const meta = text => JSON.parse(text.split('\n')[0].slice('CONTEXT_KIT '.length));
@@ -45,6 +46,71 @@ test('catalog rejects traversal, absolute paths and invalid official version', (
 });
 test('range merging preserves gaps and combines overlapping/adjacent intervals', () => {
   assert.deepEqual(mergeRanges([[10, 20], [0, 5], [4, 10], [30, 32], [7, 7]]), [[0, 20], [30, 32]]);
+});
+test('concurrent context output updates preserve every document record', async t => {
+  const { root, kit } = await setup(t);
+  const registry = new ContextRegistry(kit);
+  const source = text => ({ text, source: 'project-context/glossary.md', sha256: 'a'.repeat(64), id: randomUUID(), createdAt: new Date().toISOString() });
+  const docs = Array.from({ length: 10 }, (_, i) => entry({ id: `doc-${i}`, title: `Doc ${i}` }));
+  await Promise.all(docs.map((doc, i) => registry.noteOutput(source(`body-${i}`), doc, { start: 0, end: 6, hasBody: true })));
+  const ledger = await registry.readLedger();
+  assert.equal(ledger.records.length, 10);
+  assert.deepEqual(new Set(ledger.records.map(record => record.docId)), new Set(docs.map(doc => doc.id)));
+});
+test('context output update racing purge leaves a valid ledger or a cleanly purged state', async t => {
+  const { kit } = await setup(t);
+  const registry = new ContextRegistry(kit);
+  const doc = entry();
+  const source = { text: 'body', source: doc.path, sha256: 'b'.repeat(64), id: randomUUID(), createdAt: new Date().toISOString() };
+  await Promise.all([
+    registry.noteOutput(source, doc, { start: 0, end: 4, hasBody: true }),
+    kit.purge(),
+  ]);
+  const ledger = await registry.readLedger();
+  assert.equal(ledger.version, 1);
+  assert.ok(Array.isArray(ledger.records));
+});
+test('context listing succeeds when metrics storage is unavailable', async t => {
+  const { root, kit } = await setup(t);
+  await fs.mkdir(path.join(root, '.context-kit-cache'));
+  await fs.mkdir(path.join(root, '.context-kit-cache', 'metrics.jsonl'));
+  const result = JSON.parse(await kit.context());
+  assert.equal(result.metrics_recorded, false);
+  assert.equal(result.metrics_warning, 'Metrics could not be recorded');
+});
+test('broken output ledger reports a fixed tracking error without filesystem details', async t => {
+  const { root, kit } = await setup(t);
+  await fs.mkdir(path.join(root, '.context-kit-cache'), { recursive: true });
+  await fs.writeFile(path.join(root, '.context-kit-cache', 'context-reads.json'), '{broken');
+  const result = JSON.parse(await kit.context());
+  assert.equal(result.tracking_error, 'Context output tracking unavailable');
+  assert.equal(JSON.stringify(result).includes(root), false);
+  assert.equal(JSON.stringify(result).includes('SyntaxError'), false);
+});
+test('BOM catalog is accepted and malformed JSON gives fixed guidance', async t => {
+  const { root, kit } = await setup(t);
+  const catalogPath = path.join(root, 'project-context/catalog.json');
+  const catalog = { schemaVersion: 1, documents: [entry()] };
+  await fs.writeFile(catalogPath, `\ufeff${JSON.stringify(catalog)}`);
+  assert.equal((await kit.context({ action: 'list' })).includes('glossary'), true);
+  await fs.writeFile(catalogPath, '{broken');
+  await assert.rejects(() => kit.context({ action: 'list' }), /BOM|trailing commas|UTF-8/);
+});
+test('independent processes preserve distinct context ledger records', async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'context-kit-process-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  await fs.mkdir(path.join(root, 'project-context'));
+  const documents = Array.from({ length: 8 }, (_, i) => entry({
+    id: `doc-${i}`, title: `Doc ${i}`, path: `project-context/doc-${i}.md`,
+  }));
+  await fs.writeFile(path.join(root, 'project-context/catalog.json'), JSON.stringify({ schemaVersion: 1, documents }));
+  for (const doc of documents) await fs.writeFile(path.join(root, doc.path), `body ${doc.id}`);
+  const moduleUrl = new URL('../src/core.mjs', import.meta.url).href;
+  const contextUrl = new URL('../src/context.mjs', import.meta.url).href;
+  const script = `import { randomUUID } from 'node:crypto'; import { ContextKit } from ${JSON.stringify(moduleUrl)}; import { ContextRegistry } from ${JSON.stringify(contextUrl)}; const kit = await ContextKit.create(process.argv[1]); const doc = JSON.parse(await (await import('node:fs/promises')).readFile(process.argv[1] + '/project-context/catalog.json')).documents[Number(process.argv[2])]; await new ContextRegistry(kit).noteOutput({text:'body '+doc.id,source:doc.path,sha256:'a'.repeat(64),id:randomUUID(),createdAt:new Date().toISOString()},doc,{start:0,end:doc.id.length+5,hasBody:true});`;
+  await Promise.all(documents.map((_, i) => exec(process.execPath, ['--input-type=module', '-e', script, root, String(i)])));
+  const ledger = await new ContextRegistry(await ContextKit.create(root)).readLedger();
+  assert.equal(ledger.records.length, documents.length);
 });
 test('listing hashes locally but never sends body or marks it as output', async t => {
   const { kit, list } = await setup(t); const overview = await list();
@@ -167,7 +233,7 @@ test('ambiguous aliases do not assign an arbitrary authoritative registration', 
   catalog.documents.push(entry({ id: 'alias', path: 'alias.md', status: 'archived' })); await writeCatalog(catalog);
   await assert.rejects(() => kit.context({ action: 'read', id: 'glossary' }), /multiple registrations/);
   const m = meta(await kit.read('project-context/glossary.md'));
-  assert.equal(m.context_document, undefined); assert.match(m.context_registration_warning, /multiple registrations/);
+  assert.equal(m.context_document, undefined); assert.equal(m.context_registration_warning, 'Context registration unavailable');
 });
 test('metadata listing paginates, unknown IDs and mixed list/read parameters fail', async t => {
   const { kit, catalog, writeCatalog } = await setup(t);

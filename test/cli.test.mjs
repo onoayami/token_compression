@@ -6,6 +6,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { parseArgs } from '../src/options.mjs';
 const run = promisify(execFile);
 const cli = fileURLToPath(new URL('../src/cli.mjs', import.meta.url));
 async function rootFor(t) {
@@ -14,6 +15,13 @@ async function rootFor(t) {
   return root;
 }
 const call = args => run(process.execPath, [cli, ...args]);
+test('CLI accepts equals syntax for values beginning with option markers', () => {
+  assert.deepEqual(parseArgs(['--quote=--x'], new Set(['quote'])).options.quote, '--x');
+  assert.deepEqual(parseArgs(['--quote', 'text'], new Set(['quote'])).options.quote, 'text');
+  assert.throws(() => parseArgs(['--quote', '--x'], new Set(['quote'])), /use --quote=VALUE/);
+  assert.throws(() => parseArgs(['--offset', ''], new Set(['offset'])), /numeric/);
+  assert.throws(() => parseArgs(['--offset', '1', '--offset=2'], new Set(['offset'])), /Duplicate/);
+});
 test('CLI config prints a VS Code stdio setup without changing workspace files', async t => {
   const root = await rootFor(t); await fs.writeFile(path.join(root, 'keep.txt'), 'keep');
   const { stdout, stderr } = await call(['config', '--root', root]);
@@ -47,14 +55,35 @@ test('CLI unsupported files and malformed flags have nonzero exit status', async
   await assert.rejects(() => call(['config', '--unknown', 'yes']), e => e.code === 1);
   await assert.rejects(() => call(['config', '--format', 'other']), e => e.code === 1);
 });
-test('custom configuration is explicit and validated', async t => {
+test('CLI rejects options belonging to another command', async t => {
+  const root = await rootFor(t);
+  await fs.writeFile(path.join(root, 'a.txt'), 'a');
+  for (const args of [
+    ['read', 'a.txt', '--format', 'json'],
+    ['read', 'a.txt', '--offset', '1'],
+    ['source', '00000000-0000-4000-8000-000000000000', '--mode', 'safe'],
+    ['stats', '--mode', 'preview'],
+    ['stats', '--limit', '1'],
+    ['purge', '--format', 'json'],
+    ['config', '--mode', 'safe'],
+    ['config', '--offset', '1'],
+  ]) {
+    const option = args.find(value => value.startsWith('--')).slice(2);
+    await assert.rejects(() => call([...args, '--root', root]), e =>
+      e.code === 1 && e.stderr.includes(`Unknown option for ${args[0]}: --${option}`));
+  }
+});
+test('config validates the root and configuration without creating a cache', async t => {
   const root = await rootFor(t);
   const config = path.join(root, 'settings.json');
   await fs.writeFile(config, JSON.stringify({ extraBlockedPaths: ['private'] }));
   const out = JSON.parse((await call(['config', '--root', root, '--config', config])).stdout);
   assert.deepEqual(out.servers['context-kit'].args.slice(-2), ['--config', config]);
+  assert.deepEqual(await fs.readdir(root), ['settings.json']);
   await fs.writeFile(config, JSON.stringify({ nonsense: true }));
-  await assert.rejects(() => call(['stats', '--root', root, '--config', config]), /Unknown config/);
+  await assert.rejects(() => call(['config', '--root', root, '--config', config]), e => e.code === 1 && /Unknown config/.test(e.stderr));
+  await assert.rejects(() => call(['config', '--root', path.join(root, 'missing')]), e => e.code === 1);
+  await assert.rejects(() => call(['config', '--config', path.join(root, 'missing.json')]), e => e.code === 1);
 });
 test('handoff workflow includes source identity, unverified status and manual new-chat boundary', async () => {
   const save = await fs.readFile(new URL('../integration/prompts/context-handoff-save.prompt.md', import.meta.url), 'utf8');

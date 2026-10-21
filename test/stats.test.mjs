@@ -75,6 +75,23 @@ test('legacy rows are excluded from content rates and clearly counted', async t 
   assert.equal(stats.content.reduction_percent_by_bytes, null);
   assert.equal(stats.returned_text.reference_byte_delta_vs_original_full_text, 50);
 });
+test('malformed metric rows are excluded and counted without changing valid totals', async t => {
+  const { kit, root, write } = await setup(t);
+  await write('a.txt', 'valid');
+  await kit.read('a.txt');
+  await fs.appendFile(path.join(root, '.context-kit-cache', 'metrics.jsonl'), [
+    '{"type":"read","inputBytes":"bad","responseBytes":1}',
+    '{"type":"retrieve","responseBytes":-1,"bodyBytes":1}',
+    '{"type":"read","inputBytes":1,"inputChars":1,"compactBytes":1,"compactChars":1,"responseBytes":1}',
+    '{"type":"read","inputBytes":1,"inputChars":1,"compactBytes":1,"compactChars":1,"responseBytes":Infinity}',
+  ].join('\n') + '\n');
+  const stats = await kit.stats();
+  assert.equal(stats.invalid_metric_rows, 3);
+  assert.equal(stats.metrics_complete, false);
+  assert.equal(stats.read_calls, 2);
+  assert.ok(stats.content.original_bytes > 0);
+  assert.equal(stats.content.original_bytes, Buffer.byteLength('valid') + 1);
+});
 test('lossy previews are identified instead of implying quality preservation', async t => {
   const { kit, write } = await setup(t);
   await write('a.log', Array.from({ length: 150 }, (_, i) => `ordinary synthetic notification ${i}`).join('\n'));

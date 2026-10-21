@@ -10,6 +10,11 @@ import { activate, determineIntent, httpDefinition } from '../vscode-extension/r
 import { applySetup, planSetup } from '../src/setup.mjs';
 const exec = promisify(execFile), kitRoot = fileURLToPath(new URL('../', import.meta.url));
 const uri = filename => ({ scheme: 'file', fsPath: filename, toString: () => `file://${filename}` });
+const deferred = () => {
+  let resolve;
+  const promise = new Promise(value => { resolve = value; });
+  return { promise, resolve };
+};
 const parseURI = value => ({ toString: () => value });
 class EventEmitter {
   listeners = [];
@@ -45,7 +50,9 @@ async function fixture(t, options = {}) {
     lm: { registerMcpServerDefinitionProvider: (id, provider) => { seen.providerId = id; seen.provider = provider; return { dispose() {} }; } },
     chat: { createChatParticipant: (id, handler) => { seen.participantId = id; seen.participant = handler; return { dispose() {} }; } },
   };
-  const manager = await activate(context, vscode, { kitRoot });
+  const manager = await activate(context, vscode, {
+    kitRoot, startServer: options.startServer, exposeLifecycle: options.exposeLifecycle,
+  });
   t.after(async () => { await manager.dispose(); for (const disposable of context.subscriptions) disposable.dispose(); });
   const chat = async prompt => {
     const output = { markdown: [], progress: [], buttons: [] };
@@ -53,6 +60,21 @@ async function fixture(t, options = {}) {
     return output;
   };
   return { root, context, vscode, seen, commands, values, manager, chat, foldersChanged };
+}
+function delayedServerFactory() {
+  const started = deferred(), release = deferred();
+  const state = { starts: 0, closes: 0, started: started.promise, release: release.resolve };
+  state.startServer = async () => {
+    state.starts++;
+    started.resolve();
+    await release.promise;
+    return {
+      endpoint: `http://127.0.0.1:51234/mcp-${state.starts}`,
+      token: 'test-token',
+      close: async () => { state.closes++; },
+    };
+  };
+  return state;
 }
 test('chat phrase routes only setup, status and stats; regular messages show help', () => {
   assert.equal(determineIntent({ prompt: '初期設定' }), 'setup');
@@ -134,6 +156,14 @@ test('chosen local Markdown design is registered and its open command uses that 
   assert.equal(seen.opened.at(-1).fsPath, design);
   assert.equal(await fs.readFile(design, 'utf8'), '# MY DESIGN');
 });
+test('opening a document uses validated catalog errors instead of parser details', async t => {
+  const { root, commands, seen } = await fixture(t);
+  await applySetup(await planSetup({ root, templateRoot: kitRoot }));
+  await fs.writeFile(path.join(root, 'project-context/catalog.json'), '{broken');
+  const result = await commands.get('contextkit.openGlossary')();
+  assert.match(result.error, /完了できませんでした/);
+  assert.equal(seen.errors.at(-1), 'Context Kitの処理を完了できませんでした。設定と対象ファイルを確認してください。');
+});
 test('workspace removal stops the endpoint and trust loss blocks requests even before host reload', async t => {
   const { chat, vscode, seen, foldersChanged } = await fixture(t); await chat('初期設定');
   const [definition] = await seen.provider.provideMcpServerDefinitions();
@@ -151,10 +181,58 @@ test('enabled workspace configuration restores server on a later activation with
   assert.equal((await seen.provider.provideMcpServerDefinitions()).length, 1);
   assert.equal(await fs.readFile(path.join(root, 'project-context/overview.md'), 'utf8'), before);
 });
+test('concurrent starts create one local server', async t => {
+  const state = delayedServerFactory();
+  const { root, manager } = await fixture(t, { startServer: state.startServer, exposeLifecycle: true });
+  const first = manager.start(root), second = manager.start(root);
+  await state.started; state.release();
+  await Promise.all([first, second]);
+  assert.equal(state.starts, 1);
+  assert.equal(state.closes, 0);
+});
+test('a concurrent stop waits for start and closes the only local server', async t => {
+  const state = delayedServerFactory();
+  const { root, manager } = await fixture(t, { startServer: state.startServer, exposeLifecycle: true });
+  const starting = manager.start(root);
+  await state.started;
+  const stopping = manager.stop();
+  state.release();
+  await Promise.all([starting, stopping]);
+  assert.equal(state.starts, 1);
+  assert.equal(state.closes, 1);
+});
+test('failed server registration closes the server and allows a later start', async t => {
+  let starts = 0, closes = 0;
+  const startServer = async () => {
+    starts++;
+    return {
+      endpoint: `http://127.0.0.1:51234/failing-${starts}`,
+      token: 'test-token',
+      close: async () => { closes++; },
+    };
+  };
+  const { root, vscode, manager } = await fixture(t, { startServer, exposeLifecycle: true });
+  vscode.McpHttpServerDefinition = class BrokenHttpDefinition {
+    constructor() { throw new Error('injected registration failure'); }
+  };
+  let timeoutId;
+  const timeout = new Promise((_, reject) => { timeoutId = setTimeout(() => reject(new Error('start timed out')), 250); });
+  try {
+    await assert.rejects(Promise.race([manager.start(root), timeout]), /MCP登録API|timed out/);
+  } finally {
+    clearTimeout(timeoutId);
+  }
+  assert.equal(closes, 1);
+  vscode.McpHttpServerDefinition = PositionalHttpDefinition;
+  await manager.start(root);
+  assert.equal(starts, 2);
+  assert.equal(closes, 1);
+});
 test('staging uses official-package layout, includes runtime/templates and excludes tests, caches and dependencies', async t => {
   const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'context-kit-stage-')); t.after(() => fs.rm(temp, { recursive: true, force: true }));
   const out = path.join(temp, 'extension');
-  const { stdout } = await exec('python3', ['scripts/stage-extension.py', '--out', out], { cwd: kitRoot });
+  const python = process.platform === 'win32' ? 'python' : 'python3';
+  const { stdout } = await exec(python, ['scripts/stage-extension.py', '--out', out], { cwd: kitRoot });
   assert.match(stdout, /Staged extension: 0\.4\.0/);
   const manifest = JSON.parse(await fs.readFile(path.join(out, 'package.json'), 'utf8'));
   assert.equal(manifest.main, './extension.cjs'); assert.ok(await fs.stat(path.join(out, manifest.main)));
@@ -164,5 +242,5 @@ test('staging uses official-package layout, includes runtime/templates and exclu
   assert.equal(manifest.contributes.chatParticipants[0].isSticky, false);
   const rootPackage = JSON.parse(await fs.readFile(path.join(kitRoot, 'package.json'), 'utf8'));
   assert.equal(manifest.version, rootPackage.version);
-  await assert.rejects(() => exec('python3', ['scripts/stage-extension.py', '--out', out], { cwd: kitRoot }), /Output exists/);
+  await assert.rejects(() => exec(python, ['scripts/stage-extension.py', '--out', out], { cwd: kitRoot }), /Output exists/);
 });
