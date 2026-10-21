@@ -2,15 +2,17 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { startLocalServer } from './http.mjs';
+import { HeadroomManager } from './headroom.mjs';
 
 export function determineIntent(request) {
   if (request.command === 'setup' || /初期設定|セットアップ|はじめる|始める|\bsetup\b/i.test(request.prompt || '')) return 'setup';
-  if (request.command === 'stats' || /圧縮|統計|\bstats\b/i.test(request.prompt || '')) return 'stats';
+  if (request.command === 'proxy' || /自動圧縮|プロキシ|\bproxy\b/i.test(request.prompt || '')) return 'proxy';
+  if (request.command === 'stats' || /圧縮状況|統計|\bstats\b/i.test(request.prompt || '')) return 'stats';
   if (request.command === 'status' || /状況|状態|一覧|\bstatus\b/i.test(request.prompt || '')) return 'overview';
   return 'help';
 }
 export function httpDefinition(vscode, endpoint, token) {
-  const label = 'Context Kit（拡張内蔵）', uri = vscode.Uri.parse(endpoint), headers = { Authorization: `Bearer ${token}` }, version = '0.4.2';
+  const label = 'Context Kit（拡張内蔵）', uri = vscode.Uri.parse(endpoint), headers = { Authorization: `Bearer ${token}` }, version = '0.5.0';
   // The stable API has used positional and object-shaped constructor variants.
   // Validate the constructed fields; do not silently register an unusable endpoint.
   for (const create of [
@@ -32,6 +34,8 @@ const fenced = value => {
 export async function activate(context, vscode, {
   kitRoot = path.join(context.extensionPath, 'kit'),
   startServer = startLocalServer,
+  headroomManager,
+  createHeadroomManager = options => new HeadroomManager(options),
   exposeLifecycle = false,
 } = {}) {
   const moduleAt = name => import(pathToFileURL(path.join(kitRoot, 'src', name)).href);
@@ -40,6 +44,19 @@ export async function activate(context, vscode, {
   ]);
   const changed = new vscode.EventEmitter();
   let root = null, kit = null, server = null, disposed = false, wizardRunning = false;
+  const proxyConfiguration = vscode.workspace.getConfiguration?.('contextkit.proxy');
+  const globalStoragePath = context.globalStorageUri?.fsPath;
+  const headroom = headroomManager || (
+    process.platform === 'darwin' && globalStoragePath
+      ? createHeadroomManager({
+        storagePath: globalStoragePath,
+        command: proxyConfiguration?.get?.('headroomPath') || undefined,
+        port: proxyConfiguration?.get?.('port') || undefined,
+        root: vscode.workspace.workspaceFolders?.[0]?.uri?.fsPath,
+        appName: vscode.env.appName,
+      })
+      : null
+  );
   const localFolders = () => (vscode.workspace.workspaceFolders || []).filter(f => f.uri.scheme === 'file');
   const permittedRoot = value => localFolders().some(f => path.resolve(f.uri.fsPath) === path.resolve(value));
   const assertLocal = () => {
@@ -127,6 +144,62 @@ export async function activate(context, vscode, {
     const text = formatStats(await requireKit().stats());
     await vscode.window.showTextDocument(await vscode.workspace.openTextDocument({ language: 'markdown', content: text })); return text;
   };
+  const requireHeadroom = () => {
+    if (!headroom) throw new Error('自動圧縮はmacOSのデスクトップ版VS Codeでのみ利用できます。');
+    return headroom;
+  };
+  const proxyStatus = async () => {
+    const status = await requireHeadroom().status();
+    const message = status.running ? `Headroom自動圧縮は稼働中です（127.0.0.1:${status.port}）。` :
+      status.portInUse ? `別プロセスが127.0.0.1:${status.port}で稼働しています。Context Kitは所有・停止しません。` :
+      status.authenticated ? 'Headroomは停止中です。停止中はCopilotを迂回せず接続失敗になります。' :
+      'Headroom認証が必要です。認証コマンドを実行してください。';
+    vscode.window.showInformationMessage?.(message);
+    return status;
+  };
+  const proxySetup = async () => {
+    const manager = requireHeadroom();
+    const approved = await vscode.window.showInformationMessage?.(
+      'Context Kitの管理領域へHeadroom 0.41.0をインストールし、自動圧縮を有効にします。VSIXには同梱せず、PyPIから第三者Apache-2.0依存を取得します。約1GB弱の空き容量とネット接続が必要です。グローバルインストールは行いません。\n\nHeadroomはGitHub Device FlowとCopilot Chat用OAuthクライアントIDを使う外部連携で、GitHub公式のContext Kit統合ではありません。所属組織とGitHubの規約・ポリシーを確認してから同意してください。',
+      { modal: true }, 'インストールする');
+    if (approved !== 'インストールする') return { cancelled: true };
+    await manager.install({ python: proxyConfiguration?.get?.('python') || 'python3' });
+    const next = await vscode.window.showInformationMessage?.(
+      'Headroomを管理領域へ導入しました。device flowで認証すると、自動圧縮を開始します。',
+      'Headroomを認証', '後で');
+    if (next === 'Headroomを認証') return proxyAuth();
+    return { installed: true, authenticationRequired: true };
+  };
+  const proxyAuth = async () => {
+    const manager = requireHeadroom();
+    await manager.authenticate({
+      onDeviceFlow: ({ url, code }) => {
+        const notice = vscode.window.showInformationMessage?.(`Headroom認証を完了してください。\nURL: ${url}\nコード: ${code}`, '認証ページを開く');
+        void notice?.then(choice => {
+          if (choice === '認証ページを開く') void vscode.env.openExternal?.(vscode.Uri.parse(url));
+        });
+      },
+    });
+    const result = await manager.start();
+    await context.globalState.update('contextkit.proxy.enabled', true);
+    vscode.window.showInformationMessage?.('Headroom認証が完了し、自動圧縮を開始しました。');
+    return result;
+  };
+  const proxyStart = async () => {
+    const result = await requireHeadroom().start();
+    await context.globalState.update('contextkit.proxy.enabled', true);
+    return result;
+  };
+  const proxyStop = async () => {
+    const result = await requireHeadroom().stop();
+    await context.globalState.update('contextkit.proxy.enabled', false);
+    return result;
+  };
+  const proxyUninstall = async () => {
+    const result = await requireHeadroom().unwrap();
+    await context.globalState.update('contextkit.proxy.enabled', false);
+    return result;
+  };
   const openDoc = async id => {
     const value = requireKit(), catalog = await new ContextRegistry(value).catalog();
     const entry = catalog?.documents.find(d => d.id === id);
@@ -134,17 +207,31 @@ export async function activate(context, vscode, {
     const filename = await value.sourcePath(entry.path);
     await vscode.window.showTextDocument(vscode.Uri.file(filename));
   };
+  const errorMessages = {
+    UNSUPPORTED_PLATFORM: '自動圧縮はmacOSのデスクトップ版VS Codeでのみ利用できます。',
+    UNSUPPORTED_APP: '自動圧縮MVPはmacOSのVisual Studio Code安定版でのみ利用できます。Insidersや派生版では利用できません。',
+    HEADROOM_VERSION_MISMATCH: '対応するHeadroom 0.41.0が見つかりません。自動圧縮の設定をもう一度実行してください。',
+    HEADROOM_AUTH_REQUIRED: 'Headroom認証が必要です。「Headroomを認証」を実行してください。',
+    HEADROOM_AUTH_FAILED: 'Headroom認証を完了できませんでした。表示されたデバイスコードを確認して再試行してください。',
+    HEADROOM_INSUFFICIENT_SPACE: 'Headroom導入に必要な空き容量が不足しています。約1GB弱を確保して再試行してください。',
+    HEADROOM_PYTHON_NOT_FOUND: 'Python 3.10以上が見つかりません。設定にPythonの絶対パスを指定してください。',
+    HEADROOM_UNHEALTHY: 'Headroomが正常なhealth応答を返しません。ポート競合または導入状態を確認してください。',
+    HEADROOM_PORT_IN_USE: '指定ポートで別のHeadroomが稼働しています。既存プロセスは終了せず、ポート設定を確認してください。',
+    HEADROOM_BUSY: 'Headroomは別の処理中です。状態を確認してから再試行してください。',
+  };
   const safeCommand = callback => async (...args) => {
     try { return await callback(...args); }
     catch (e) {
-      console.error(`Context Kit command failed: ${e.message}`);
-      const message = 'Context Kitの処理を完了できませんでした。設定と対象ファイルを確認してください。';
+      const code = typeof e?.code === 'string' ? e.code : 'CONTEXTKIT_COMMAND_FAILED';
+      console.error(`Context Kit command failed: ${code}`);
+      const message = errorMessages[code] || 'Context Kitの処理を完了できませんでした。設定と対象ファイルを確認してください。';
       vscode.window.showErrorMessage(message);
-      return { error: message };
+      return { error: message, code };
     }
   };
   for (const [name, callback] of Object.entries({ setup, overview: showOverview, stats: showStats,
     openGlossary: () => openDoc('glossary'), openDesign: () => openDoc('design'),
+    proxySetup, proxyAuth, proxyStart, proxyStop, proxyStatus, proxyUninstall,
     disable: async () => { await context.workspaceState.update('contextkit.enabled', false); await stop(); vscode.window.showInformationMessage('このフォルダで停止しました。資料ファイルは削除していません。'); } })) {
     context.subscriptions.push(vscode.commands.registerCommand(`contextkit.${name}`, safeCommand(callback)));
   }
@@ -164,15 +251,16 @@ export async function activate(context, vscode, {
           stream.button({ command: 'contextkit.setup', title: '初期設定をもう一度開く' });
         }
         else {
-          stream.markdown(`**初期設定を保存しました。接続確認は次の操作で行います。**\n\n新規作成 ${result.created.length}件、追記 ${result.updated.length}件。既存の資料は上書きしていません。\n\n${result.warnings.join('\n\n')}\n\n通常のCopilotには、対応するログ・JSON・テキスト・Markdownを読む際にkit_readを優先する指示を追加しました。モデル判断や実行許可によっては自動で呼ばれない場合があります。会話履歴そのものは自動圧縮しません。\n\n「kit_contextで共通知識の一覧を見せて」と依頼し、接続とツール実行を確認してください。\n\n用語集や設計書は、下のボタンから開けます。`);
+          stream.markdown(`**初期設定を保存しました。接続確認は次の操作で行います。**\n\n新規作成 ${result.created.length}件、追記 ${result.updated.length}件。既存の資料は上書きしていません。\n\n${result.warnings.join('\n\n')}\n\n通常のCopilotには、対応するログ・JSON・テキスト・Markdownを読む際にkit_readを優先する指示を追加しました。モデル判断や実行許可によっては自動で呼ばれない場合があります。\n\nHeadroomを設定すると、macOSでは送信前にログ・JSON・反復ツール出力を自動圧縮できます。密な自然文は縮まらない場合があり、意味要約や決定事項の長期整理は既存のhandoff・資料管理が担当します。\n\n「kit_contextで共通知識の一覧を見せて」と依頼し、接続とツール実行を確認してください。\n\n用語集や設計書は、下のボタンから開けます。`);
           stream.button({ command: 'contextkit.openGlossary', title: '用語集を開く' });
           stream.button({ command: 'contextkit.openDesign', title: '設計書を開く' });
         }
       } else if (intent === 'overview') stream.markdown(fenced(formatContextOverview(JSON.parse(await requireKit().context()))));
       else if (intent === 'stats') stream.markdown(fenced(formatStats(await requireKit().stats())));
+      else if (intent === 'proxy') stream.markdown(fenced(JSON.stringify(await proxyStatus(), null, 2)));
       else { stream.markdown('初期設定専用の窓口です。**@contextkit 初期設定**、**@contextkit 状況**、**@contextkit 圧縮状況** が使えます。一般の実装や相談は通常のCopilotへ戻って依頼してください。'); stream.button({ command: 'contextkit.setup', title: '初期設定を始める' }); }
     } catch (e) {
-      console.error(`Context Kit chat failed: ${e.message}`);
+      console.error(`Context Kit chat failed: ${typeof e?.code === 'string' ? e.code : 'CONTEXTKIT_CHAT_FAILED'}`);
       stream.markdown('設定・確認を完了できませんでした。ファイルと設定を確認してから、もう一度実行してください。');
     }
     return {};
@@ -183,7 +271,10 @@ export async function activate(context, vscode, {
     const saved = context.workspaceState.get('contextkit.root');
     if (saved && permittedRoot(saved) && vscode.workspace.isTrusted && !vscode.env.remoteName) await start(saved);
   }
-  const dispose = async () => { if (disposed) return; disposed = true; await stop(); };
+  if (headroom && context.globalState?.get?.('contextkit.proxy.enabled')) {
+    void headroom.start().catch(() => vscode.window.showErrorMessage?.('Headroom自動圧縮を再開できません。自動圧縮の状態を確認してください。'));
+  }
+  const dispose = async () => { if (disposed) return; disposed = true; await stop(); await headroom?.dispose(); };
   context.subscriptions.push({ dispose: () => { void dispose(); } });
-  return exposeLifecycle ? { dispose, start, stop } : { dispose };
+  return exposeLifecycle ? { dispose, start, stop, proxySetup, proxyAuth, proxyStart, proxyStop, proxyStatus, proxyUninstall } : { dispose };
 }

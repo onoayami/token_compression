@@ -28,17 +28,20 @@ class PositionalHttpDefinition {
 async function fixture(t, options = {}) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'context-kit-extension-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
-  const commands = new Map(), values = new Map(Object.entries(options.state || {}));
+  const commands = new Map(), values = new Map(Object.entries(options.state || {})), globalValues = new Map();
   const seen = { infos: [], errors: [], opened: [], quickPicks: [], inputs: [], executes: [], provider: null, participant: null };
   const foldersChanged = new EventEmitter();
-  const context = { extensionPath: path.join(kitRoot, 'vscode-extension'), subscriptions: [], workspaceState: {
+  const context = { extensionPath: path.join(kitRoot, 'vscode-extension'), subscriptions: [], globalStorageUri: uri(path.join(root, 'global')),
+    globalState: { get: key => globalValues.get(key), update: async (key, value) => { globalValues.set(key, value); } }, workspaceState: {
     get: key => values.get(key), update: async (key, value) => { values.set(key, value); },
   } };
   const vscode = {
-    EventEmitter, McpHttpServerDefinition: PositionalHttpDefinition, Uri: { file: uri, parse: parseURI }, env: { remoteName: options.remoteName },
+    EventEmitter, McpHttpServerDefinition: PositionalHttpDefinition, Uri: { file: uri, parse: parseURI },     env: { remoteName: options.remoteName, appName: 'Visual Studio Code', openExternal: async value => value },
     workspace: { isTrusted: options.trusted !== false, workspaceFolders: options.noFolders ? [] :
       (options.workspaceFolders || [{ name: 'project', uri: uri(root) }]),
-      openTextDocument: async value => value, onDidChangeWorkspaceFolders: foldersChanged.event },
+      openTextDocument: async value => value, onDidChangeWorkspaceFolders: foldersChanged.event,
+      getConfiguration: () => ({ get: key => options.proxyConfiguration?.[key] }),
+    },
     window: {
       showInputBox: async args => { seen.inputs.push(args); return Object.hasOwn(options, 'description') ? options.description : 'テスト用の申込画面'; },
       showQuickPick: async (items, args) => {
@@ -58,6 +61,7 @@ async function fixture(t, options = {}) {
   };
   const manager = await activate(context, vscode, {
     kitRoot, startServer: options.startServer, exposeLifecycle: options.exposeLifecycle,
+    headroomManager: options.headroomManager,
   });
   t.after(async () => { await manager.dispose(); for (const disposable of context.subscriptions) disposable.dispose(); });
   const chat = async prompt => {
@@ -65,7 +69,7 @@ async function fixture(t, options = {}) {
     await seen.participant({ prompt }, {}, { markdown: text => output.markdown.push(text), progress: text => output.progress.push(text), button: button => output.buttons.push(button) });
     return output;
   };
-  return { root, context, vscode, seen, commands, values, manager, chat, foldersChanged };
+  return { root, context, vscode, seen, commands, values, globalValues, manager, chat, foldersChanged };
 }
 function delayedServerFactory() {
   const started = deferred(), release = deferred();
@@ -89,6 +93,17 @@ test('chat phrase routes only setup, status and stats; regular messages show hel
   assert.equal(determineIntent({ command: 'status' }), 'overview');
   assert.equal(determineIntent({ prompt: '一覧' }), 'overview');
   assert.equal(determineIntent({ prompt: 'アプリの開発を手伝って' }), 'help');
+});
+test('proxy status distinguishes an unowned process on the configured port', async t => {
+  const headroomManager = {
+    status: async () => ({ running: false, portInUse: true, authenticated: true, port: 8787 }),
+    stop: async () => {},
+    dispose: async () => {},
+  };
+  const { commands, seen } = await fixture(t, { headroomManager });
+  await commands.get('contextkit.proxyStatus')();
+  assert.match(seen.infos.at(-1)[0], /別プロセスが127\.0\.0\.1:8787で稼働/);
+  assert.match(seen.infos.at(-1)[0], /所有・停止しません/);
 });
 test('MCP constructor compatibility validates both positional and object definitions and rejects unusable APIs', () => {
   const endpoint = 'http://127.0.0.1:51234/mcp', token = 'testing-token';
@@ -255,6 +270,7 @@ test('staging uses official-package layout, includes runtime/templates and exclu
   assert.match(stdout, new RegExp(`Staged extension: ${rootPackage.version.replaceAll('.', '\\.')}`));
   const manifest = JSON.parse(await fs.readFile(path.join(out, 'package.json'), 'utf8'));
   assert.equal(manifest.main, './extension.cjs'); assert.ok(await fs.stat(path.join(out, manifest.main)));
+  assert.ok(await fs.stat(path.join(out, 'headroom.mjs')));
   assert.ok(await fs.stat(path.join(out, 'kit/src/setup.mjs'))); assert.ok(await fs.stat(path.join(out, 'kit/integration/prompts/context-handoff-save.prompt.md')));
   assert.ok(await fs.stat(path.join(out, 'kit/integration/copilot-instructions.snippet.md')));
   const paths = await fs.readdir(out, { recursive: true });
