@@ -6,6 +6,7 @@ import { HeadroomManager } from './headroom.mjs';
 
 export function determineIntent(request) {
   if (request.command === 'setup' || /初期設定|セットアップ|はじめる|始める|\bsetup\b/i.test(request.prompt || '')) return 'setup';
+  if (request.command === 'auth' || /再認証|認証を?(?:やり直|し直|する|して)|ログイン(?:し直|する|して)|github\s*(?:と|との|の)?連携|\bauth\b/i.test(request.prompt || '')) return 'proxyAuth';
   if (request.command === 'compress' || /自動圧縮.*(?:設定|導入|有効)/i.test(request.prompt || '')) return 'proxySetup';
   if (request.command === 'proxy' || /自動圧縮|プロキシ|\bproxy\b/i.test(request.prompt || '')) return 'proxy';
   if (request.command === 'stats' || /圧縮状況|統計|\bstats\b/i.test(request.prompt || '')) return 'stats';
@@ -13,7 +14,7 @@ export function determineIntent(request) {
   return 'help';
 }
 export function httpDefinition(vscode, endpoint, token) {
-  const label = 'Context Kit（拡張内蔵）', uri = vscode.Uri.parse(endpoint), headers = { Authorization: `Bearer ${token}` }, version = '0.5.4';
+  const label = 'Context Kit（拡張内蔵）', uri = vscode.Uri.parse(endpoint), headers = { Authorization: `Bearer ${token}` }, version = '0.5.5';
   // The stable API has used positional and object-shaped constructor variants.
   // Validate the constructed fields; do not silently register an unusable endpoint.
   for (const create of [
@@ -173,15 +174,21 @@ export async function activate(context, vscode, {
   };
   const proxyAuth = async () => {
     const manager = requireHeadroom();
-    await manager.authenticate({
-      onDeviceFlow: ({ url, code }) => {
-        const notice = vscode.window.showInformationMessage?.(`Headroom認証を完了してください。\nURL: ${url}\nコード: ${code}`, '認証ページを開く');
-        void notice?.then(choice => {
-          if (choice === '認証ページを開く') void vscode.env.openExternal?.(vscode.Uri.parse(url));
-        });
-      },
-    });
-    const result = await manager.start();
+    try {
+      await manager.authenticate({
+        onDeviceFlow: ({ url, code }) => {
+          const notice = vscode.window.showInformationMessage?.(`Headroom認証を完了してください。\nURL: ${url}\nコード: ${code}\n\nうまくいかない場合は「Context Kit: Headroomを認証」をもう一度実行すると、新しいコードで最初からやり直せます。`, '認証ページを開く');
+          void notice?.then(choice => {
+            if (choice === '認証ページを開く') void vscode.env.openExternal?.(vscode.Uri.parse(url));
+          });
+        },
+      });
+    } catch (error) {
+      if (error?.code === 'HEADROOM_AUTH_CANCELLED') return { cancelled: true, replaced: true };
+      throw error;
+    }
+    // Restart so a proxy that was already running picks up the new credentials.
+    const result = await manager.restart();
     await context.globalState.update('contextkit.proxy.enabled', true);
     vscode.window.showInformationMessage?.('Headroom認証が完了し、自動圧縮を開始しました。');
     return result;
@@ -227,13 +234,15 @@ export async function activate(context, vscode, {
     UNSUPPORTED_APP: '自動圧縮MVPはmacOSのVisual Studio Code安定版でのみ利用できます。Insidersや派生版では利用できません。',
     HEADROOM_VERSION_MISMATCH: '対応するHeadroom 0.41.0が見つかりません。自動圧縮の設定をもう一度実行してください。',
     HEADROOM_AUTH_REQUIRED: 'Headroom認証が必要です。「Headroomを認証」を実行してください。',
-    HEADROOM_AUTH_FAILED: 'Headroom認証を完了できませんでした。表示されたデバイスコードを確認して再試行してください。',
+    HEADROOM_AUTH_FAILED: 'Headroom認証を完了できませんでした。「Headroomを認証し直す」から最初からやり直してください。',
+    HEADROOM_AUTH_TIMEOUT: 'Headroom認証の有効期限（15分）が切れました。「Headroomを認証し直す」から新しいコードでやり直してください。',
     HEADROOM_INSUFFICIENT_SPACE: 'Headroom導入に必要な空き容量が不足しています。約1GB弱を確保して再試行してください。',
     HEADROOM_PYTHON_NOT_FOUND: 'Python 3.10以上が見つかりません。設定にPythonの絶対パスを指定してください。',
     HEADROOM_UNHEALTHY: 'Headroomが正常なhealth応答を返しません。ポート競合または導入状態を確認してください。',
     HEADROOM_PORT_IN_USE: '指定ポートで別のHeadroomが稼働しています。既存プロセスは終了せず、ポート設定を確認してください。',
-    HEADROOM_BUSY: 'Headroomは別の処理中です。状態を確認してから再試行してください。',
   };
+  const AUTH_RETRY_CODES = new Set(['HEADROOM_AUTH_REQUIRED', 'HEADROOM_AUTH_FAILED', 'HEADROOM_AUTH_TIMEOUT']);
+  const AUTH_RETRY_LABEL = 'Headroomを認証し直す';
   const commandError = error => {
     const code = typeof error?.code === 'string' ? error.code : 'CONTEXTKIT_COMMAND_FAILED';
     return { code, message: errorMessages[code] || 'Context Kitの処理を完了できませんでした。設定と対象ファイルを確認してください。' };
@@ -243,7 +252,11 @@ export async function activate(context, vscode, {
     catch (e) {
       const { code, message } = commandError(e);
       console.error(`Context Kit command failed: ${code}`);
-      vscode.window.showErrorMessage(message);
+      if (AUTH_RETRY_CODES.has(code)) {
+        void Promise.resolve(vscode.window.showErrorMessage(message, AUTH_RETRY_LABEL)).then(choice => {
+          if (choice === AUTH_RETRY_LABEL) return vscode.commands.executeCommand('contextkit.proxyAuth');
+        }).catch(() => {});
+      } else vscode.window.showErrorMessage(message);
       return { error: message, code };
     }
   };
@@ -283,12 +296,17 @@ export async function activate(context, vscode, {
         stream.markdown(result.cancelled ? '**自動圧縮の設定をキャンセルしました。**' :
           result.authenticationRequired ? '**Headroomを導入しました。表示された案内から認証すると、自動圧縮を開始できます。**' :
           '**自動圧縮の設定が完了しました。**');
+      } else if (intent === 'proxyAuth') {
+        stream.progress('Headroom認証を最初からやり直します。表示される通知のURLとコードで認証してください。');
+        const result = await proxyAuth();
+        stream.markdown(result.cancelled ? '**新しい認証に切り替えたため、この認証は中止しました。**' : '**Headroom認証が完了し、自動圧縮を開始しました。**');
       } else if (intent === 'proxy') stream.markdown(fenced(JSON.stringify(await proxyStatus(), null, 2)));
-      else { stream.markdown('初期設定専用の窓口です。**@contextkit /setup**、**@contextkit /compress**、**@contextkit /status**、**@contextkit /stats** が使えます。一般の実装や相談は通常のCopilotへ戻って依頼してください。'); stream.button({ command: 'contextkit.setup', title: '初期設定を始める' }); stream.button({ command: 'contextkit.proxySetup', title: '自動圧縮を設定する' }); }
+      else { stream.markdown('初期設定専用の窓口です。**@contextkit /setup**、**@contextkit /compress**、**@contextkit /auth**、**@contextkit /status**、**@contextkit /stats** が使えます。一般の実装や相談は通常のCopilotへ戻って依頼してください。'); stream.button({ command: 'contextkit.setup', title: '初期設定を始める' }); stream.button({ command: 'contextkit.proxySetup', title: '自動圧縮を設定する' }); }
     } catch (e) {
       const { code, message } = commandError(e);
       console.error(`Context Kit chat failed: ${code}`);
       stream.markdown(`**${message}**`);
+      if (AUTH_RETRY_CODES.has(code)) stream.button({ command: 'contextkit.proxyAuth', title: AUTH_RETRY_LABEL });
     }
     return {};
   });

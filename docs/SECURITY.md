@@ -73,7 +73,7 @@
 - Context KitはHeadroomの設定ファイルを直接編集しない。`wrap vscode` と `unwrap vscode`だけを呼び、Headroomを設定マーカーの唯一の所有者とする。
 - Headroomの子プロセスはallowlist環境で起動する。`GH_TOKEN`、`GITHUB_TOKEN`、`GITHUB_COPILOT_*`、`COPILOT_*`、ログ・OTEL・license/cloud/API-key系環境変数は継承しない。認証時もVS Code terminalの環境overlayを使わず、`shell:false`の直接spawnを使う。runtimeのPATHから`/usr/bin`を外し、Keychainや`gh`のfallback探索を抑止する。
 - `HEADROOM_BEACON=off`、`DO_NOT_TRACK=1`、`HEADROOM_TELEMETRY=off`、`HEADROOM_UPDATE_CHECK=off`、`HEADROOM_USAGE_REPORTING=0`、`HF_HUB_OFFLINE=1`、`TRANSFORMERS_OFFLINE=1`、`HEADROOM_MODE=token`、`HEADROOM_STATELESS=1`、`HEADROOM_NO_SUBSCRIPTION_TRACKING=1`、専用workspaceを固定する。`HEADROOM_OFFLINE=1`はCopilot認証を遮断するため設定しない。
-- 認証の出力はdevice flowのURLとコードだけをUIへ表示し、それ以外のstdout/stderr、token、会話本文、fingerprint、完全パスは保存・表示しない。Context KitはOAuth tokenを保存しない。
+- 認証の出力はdevice flowのURLとコードだけをUIへ表示し、それ以外のstdout/stderr、token、会話本文、fingerprint、完全パスは保存・表示しない。Context KitはOAuth tokenを保存しない。認証の子プロセスは15分で打ち切り、再実行・拡張終了時はContext Kitが起動した認証プロセスだけを終了する。
 - `/health`はHTTP 200だけでは受け入れず、`service=headroom-proxy`、`version=0.41.0`、`status=healthy`、`ready=true`、`config.mode=token`、`config.disable_kompress=true`を検証する。
 - 異常終了の自動再起動は拡張activation中の累積上限3回。停止はContext KitがspawnしたPIDだけを終了し、Headroomの設定マーカーを残してフェイルクローズする。完全解除は`unwrap`を呼ぶが、管理venvと専用認証ファイルは再利用のため残す。
 - 自動圧縮は送信直前の構造圧縮であり、意味要約・LLMローリングサマリーを保証しない。ログ・JSON・反復ツール出力に高効果だが、密な自然文は縮まらない場合がある。長期の決定・根拠整理はContext Kit handoffが担当する。
