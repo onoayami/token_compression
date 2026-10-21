@@ -13,7 +13,7 @@ export function determineIntent(request) {
   return 'help';
 }
 export function httpDefinition(vscode, endpoint, token) {
-  const label = 'Context Kit（拡張内蔵）', uri = vscode.Uri.parse(endpoint), headers = { Authorization: `Bearer ${token}` }, version = '0.5.3';
+  const label = 'Context Kit（拡張内蔵）', uri = vscode.Uri.parse(endpoint), headers = { Authorization: `Bearer ${token}` }, version = '0.5.4';
   // The stable API has used positional and object-shaped constructor variants.
   // Validate the constructed fields; do not silently register an unusable endpoint.
   for (const create of [
@@ -234,12 +234,15 @@ export async function activate(context, vscode, {
     HEADROOM_PORT_IN_USE: '指定ポートで別のHeadroomが稼働しています。既存プロセスは終了せず、ポート設定を確認してください。',
     HEADROOM_BUSY: 'Headroomは別の処理中です。状態を確認してから再試行してください。',
   };
+  const commandError = error => {
+    const code = typeof error?.code === 'string' ? error.code : 'CONTEXTKIT_COMMAND_FAILED';
+    return { code, message: errorMessages[code] || 'Context Kitの処理を完了できませんでした。設定と対象ファイルを確認してください。' };
+  };
   const safeCommand = callback => async (...args) => {
     try { return await callback(...args); }
     catch (e) {
-      const code = typeof e?.code === 'string' ? e.code : 'CONTEXTKIT_COMMAND_FAILED';
+      const { code, message } = commandError(e);
       console.error(`Context Kit command failed: ${code}`);
-      const message = errorMessages[code] || 'Context Kitの処理を完了できませんでした。設定と対象ファイルを確認してください。';
       vscode.window.showErrorMessage(message);
       return { error: message, code };
     }
@@ -283,8 +286,9 @@ export async function activate(context, vscode, {
       } else if (intent === 'proxy') stream.markdown(fenced(JSON.stringify(await proxyStatus(), null, 2)));
       else { stream.markdown('初期設定専用の窓口です。**@contextkit /setup**、**@contextkit /compress**、**@contextkit /status**、**@contextkit /stats** が使えます。一般の実装や相談は通常のCopilotへ戻って依頼してください。'); stream.button({ command: 'contextkit.setup', title: '初期設定を始める' }); stream.button({ command: 'contextkit.proxySetup', title: '自動圧縮を設定する' }); }
     } catch (e) {
-      console.error(`Context Kit chat failed: ${typeof e?.code === 'string' ? e.code : 'CONTEXTKIT_CHAT_FAILED'}`);
-      stream.markdown('設定・確認を完了できませんでした。ファイルと設定を確認してから、もう一度実行してください。');
+      const { code, message } = commandError(e);
+      console.error(`Context Kit chat failed: ${code}`);
+      stream.markdown(`**${message}**`);
     }
     return {};
   });

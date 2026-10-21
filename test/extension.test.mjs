@@ -129,6 +129,16 @@ test('chat /compress opens the automatic compression installation flow', async t
   assert.match(seen.infos[0][0], /Headroom 0\.41\.0をインストール/);
   assert.match(output.markdown.join(''), /Headroomを導入しました/);
 });
+test('chat /compress shows fixed Python guidance instead of a generic failure', async t => {
+  const headroomManager = {
+    install: async () => { throw Object.assign(new Error('private path details'), { code: 'HEADROOM_PYTHON_NOT_FOUND' }); },
+    dispose: async () => {},
+  };
+  const { chat } = await fixture(t, { headroomManager });
+  const output = await chat({ command: 'compress' });
+  assert.match(output.markdown.join(''), /Python 3\.10以上/);
+  assert.doesNotMatch(output.markdown.join(''), /private path details/);
+});
 test('MCP constructor compatibility validates both positional and object definitions and rejects unusable APIs', () => {
   const endpoint = 'http://127.0.0.1:51234/mcp', token = 'testing-token';
   for (const Class of [PositionalHttpDefinition, class ObjectDefinition { constructor(options) { Object.assign(this, options); } }]) {

@@ -64,6 +64,7 @@ async function fixture(t, options = {}) {
     settingsFile: '/Users/test/Library/Application Support/Code/User/settings.json',
     root: '/workspace',
     platform: 'darwin',
+    home: options.home || '/Users/test',
     exec,
     spawn,
     fetchImpl: async () => ({
@@ -208,6 +209,27 @@ test('installation skips an incompatible first Python candidate', async t => {
   const probes = state.calls.filter(call => call.type === 'exec' && call.args[0] === '--version' && call.command.endsWith('python3'));
   assert.deepEqual(probes.map(call => call.command), ['/opt/homebrew/bin/python3', '/usr/local/bin/python3']);
   assert.equal(state.calls.find(call => call.type === 'exec' && call.args[0] === '-m' && call.args[1] === 'venv').command, '/usr/local/bin/python3');
+});
+
+test('installation discovers a compatible pyenv shim before the old macOS system Python', async t => {
+  const pyenvPython = '/Users/test/.pyenv/shims/python3';
+  const state = await fixture(t, {
+    fsImpl: {
+      mkdir: async () => {},
+      access: async candidate => {
+        if (![pyenvPython, '/usr/bin/python3'].includes(candidate)) throw Object.assign(new Error('missing'), { code: 'ENOENT' });
+      },
+      statfs: async () => ({ bavail: 2_000_000, bsize: 1024 }),
+    },
+    pythonVersions: {
+      [pyenvPython]: 'Python 3.12.14',
+      '/usr/bin/python3': 'Python 3.9.6',
+    },
+  });
+  await state.manager.install();
+  const probes = state.calls.filter(call => call.type === 'exec' && call.args[0] === '--version' && call.command.endsWith('python3'));
+  assert.deepEqual(probes.map(call => call.command), [pyenvPython]);
+  assert.equal(state.calls.find(call => call.type === 'exec' && call.args[0] === '-m' && call.args[1] === 'venv').command, pyenvPython);
 });
 
 test('installation stops with fixed guidance when managed storage is low on space', async t => {

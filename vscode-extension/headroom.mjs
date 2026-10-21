@@ -354,7 +354,14 @@ export class HeadroomManager {
     const paths = managedHeadroomPaths(this.#storagePath, { platform: this.#platform });
     const env = this.#environment({ forInstall: true });
     const pathApi = this.#platform === 'win32' ? path.win32 : path.posix;
-    const candidates = pathApi.isAbsolute(python) ? [python] : ['/opt/homebrew/bin/python3', '/usr/local/bin/python3', '/usr/bin/python3'];
+    const candidates = pathApi.isAbsolute(python) ? [python] :
+      pathApi.basename(python) === python ? [
+        pathApi.join('/opt/homebrew/bin', python),
+        pathApi.join('/usr/local/bin', python),
+        pathApi.join(this.#home, '.pyenv', 'shims', python),
+        pathApi.join(this.#home, '.local', 'bin', python),
+        pathApi.join('/usr/bin', python),
+      ] : [];
     let pythonPath = null;
     for (const candidate of candidates) {
       if (!await this.#fs.access(candidate).then(() => true).catch(() => false)) continue;
