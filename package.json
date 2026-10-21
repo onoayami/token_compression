@@ -1,6 +1,6 @@
 {
   "name": "copilot-context-kit",
-  "version": "0.4.2",
+  "version": "0.5.0",
   "private": true,
   "type": "module",
   "description": "Local-first context reduction and source-backed handoff starter for VS Code Copilot",
@@ -9,7 +9,7 @@
     "node": ">=20"
   },
   "scripts": {
-    "test": "node --test test/core.test.mjs test/server.test.mjs test/cli.test.mjs test/stats.test.mjs test/context.test.mjs test/setup.test.mjs test/http.test.mjs test/extension.test.mjs"
+    "test": "node --test test/core.test.mjs test/server.test.mjs test/cli.test.mjs test/stats.test.mjs test/context.test.mjs test/setup.test.mjs test/http.test.mjs test/extension.test.mjs test/headroom.test.mjs"
     ,"test:report": "node scripts/write-test-report.mjs"
   }
 }

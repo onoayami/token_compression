@@ -10,7 +10,7 @@
 - 読み取り時は開く前後のファイル識別子を照合し、差し替えを検出する。macOS/Linuxでは`O_NOFOLLOW`も利用する。Windowsでは同等のフラグやinode情報が保証されないため、従来の実体確認と読み取り中のサイズ・時刻確認が限界となる。
 - MCPへ返す自前エラーは `FILE_NOT_FOUND`、`ACCESS_DENIED`、`BLOCKED`、`TOO_LARGE`、`INVALID_ARGUMENT`、`UNSUPPORTED_ENCODING`、`SOURCE_CHANGED`、`CONTEXT_KIT_ERROR` の許可リストに限定し、メッセージは固定文言です。詳細（入力値・パスを含む場合があります）はstderrの診断ログだけに出します。
 - 共有ボリュームを別コンテナ・別PID名前空間から同じキャッシュへ同時接続する構成はサポート対象外です。hostnameが同じでもPID判定が分離され、ロックの生存確認を誤る可能性があります。
-- 独自の外部AI API・認証情報の取得・任意コマンド実行・テレメトリーは実装していない。CLIのMCP通信はstdio。拡張版のみ127.0.0.1の一時ポートで認証付きHTTPを使う。
+- Context Kit本体には独自の外部AI API・認証情報の取得・テレメトリーはない。任意のHeadroom連携については「macOS Headroom連携の追加境界」に記載する。CLIのMCP通信はstdio。拡張版のみ127.0.0.1の一時ポートで認証付きHTTPを使う。
 - 圧縮・原文取得ツールは元の入力ファイルを変更・削除せず、キャッシュ・統計・本文出力記録を作成する。
 - 初期設定は利用者の確認後に、不足する雛形とプロンプトを作成し、`.gitignore` へ除外ルールを追記する。既存の資料・台帳・プロンプトは上書きしない。
 - `kit_source` もアクセス統計を書くため、副作用があるツールとして宣言している。
@@ -66,3 +66,14 @@
 - 停止・拡張のアンインストールでは、資料・キャッシュ・引き継ぎメモを自動削除しない。必要な削除は利用者が行う。
 
 同一ユーザー権限の悪意あるローカルプロセスまで防ぐものではない。GUI・Copilotとの実接続、Windows/macOS上の動作は利用環境での受け入れ確認が必要。
+
+## macOS Headroom連携の追加境界
+
+- Headroom `0.41.0` はVSIXへ同梱せず、利用者の明示同意後にContext Kitのglobal storage内の管理venvへPyPIから導入する。第三者Apache-2.0依存、ネット接続、約730MBの実測使用量と約1GB弱の空き容量が必要である。
+- Context KitはHeadroomの設定ファイルを直接編集しない。`wrap vscode` と `unwrap vscode`だけを呼び、Headroomを設定マーカーの唯一の所有者とする。
+- Headroomの子プロセスはallowlist環境で起動する。`GH_TOKEN`、`GITHUB_TOKEN`、`GITHUB_COPILOT_*`、`COPILOT_*`、ログ・OTEL・license/cloud/API-key系環境変数は継承しない。認証時もVS Code terminalの環境overlayを使わず、`shell:false`の直接spawnを使う。runtimeのPATHから`/usr/bin`を外し、Keychainや`gh`のfallback探索を抑止する。
+- `HEADROOM_BEACON=off`、`DO_NOT_TRACK=1`、`HEADROOM_TELEMETRY=off`、`HEADROOM_UPDATE_CHECK=off`、`HEADROOM_USAGE_REPORTING=0`、`HF_HUB_OFFLINE=1`、`TRANSFORMERS_OFFLINE=1`、`HEADROOM_MODE=token`、`HEADROOM_STATELESS=1`、`HEADROOM_NO_SUBSCRIPTION_TRACKING=1`、専用workspaceを固定する。`HEADROOM_OFFLINE=1`はCopilot認証を遮断するため設定しない。
+- 認証の出力はdevice flowのURLとコードだけをUIへ表示し、それ以外のstdout/stderr、token、会話本文、fingerprint、完全パスは保存・表示しない。Context KitはOAuth tokenを保存しない。
+- `/health`はHTTP 200だけでは受け入れず、`service=headroom-proxy`、`version=0.41.0`、`status=healthy`、`ready=true`、`config.mode=token`、`config.disable_kompress=true`を検証する。
+- 異常終了の自動再起動は拡張activation中の累積上限3回。停止はContext KitがspawnしたPIDだけを終了し、Headroomの設定マーカーを残してフェイルクローズする。完全解除は`unwrap`を呼ぶが、管理venvと専用認証ファイルは再利用のため残す。
+- 自動圧縮は送信直前の構造圧縮であり、意味要約・LLMローリングサマリーを保証しない。ログ・JSON・反復ツール出力に高効果だが、密な自然文は縮まらない場合がある。長期の決定・根拠整理はContext Kit handoffが担当する。

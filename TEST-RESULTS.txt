@@ -1,10 +1,10 @@
 参考値。正はCI成果物。
-実行日時: 2026-10-21T06:54:30.195Z
-git commit: fa95e919fad4d9a49208abdfc0f94965e86a215b
+実行日時: 2026-10-21T08:16:58.567Z
+git commit: 50d7d7a6e162360b674dda410e970fef6f4815b4
 OS: darwin 25.6.0 (arm64)
 Node: v24.20.0
 コマンド: npm test
-tests: 145
-pass: 145
+tests: 162
+pass: 162
 fail: 0
 skipped: 0

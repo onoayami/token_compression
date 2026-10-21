@@ -6,6 +6,7 @@ const result = spawnSync(process.execPath, [
   '--test',
   'test/core.test.mjs', 'test/server.test.mjs', 'test/cli.test.mjs', 'test/stats.test.mjs',
   'test/context.test.mjs', 'test/setup.test.mjs', 'test/http.test.mjs', 'test/extension.test.mjs',
+  'test/headroom.test.mjs',
 ], { encoding: 'utf8' });
 const output = `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
 const value = label => output.match(new RegExp(`ℹ ${label} (\\d+)`))?.[1] ?? '0';

@@ -53,6 +53,24 @@ WSL、Remote SSH、Dev Container、ブラウザー版VS Codeでは拡張版を�
 
 `Source code.zip` はインストール用ファイルではありません。
 
+### macOSのCopilot送信前自動圧縮（MVP）
+
+macOSのVisual Studio Code安定版では、外部のHeadroom `0.41.0` をローカルプロキシとして使い、Copilotへの送信直前に会話コンテキストを自動圧縮できます。UIに表示される会話履歴を削除・置換する機能ではなく、送信前の経路だけを圧縮します。Insidersや派生版は対象外です。Context KitはHeadroomのソースを同梱・コピーせず、認証やCopilotプロトコルを独自実装しません。
+
+初回はコマンドパレットの次の順で実行します。
+
+1. **Context Kit: 自動圧縮を設定** — Context Kitの管理領域へ、利用者の明示同意後に `headroom-ai[proxy]==0.41.0` をPyPIから導入します。
+2. **Context Kit: Headroomを認証** — Headroomの明示的なdevice flowを完了します。認証完了後は自動圧縮を開始します。
+3. 必要に応じて **Context Kit: 自動圧縮の状態**、**停止（フェイルクローズ）**、**完全解除** を使います。
+
+HeadroomはVSIXに同梱せず、グローバルにもインストールしません。第三者Apache-2.0パッケージの取得にネット接続が必要で、実測で約730MB、導入時は約1GB弱の空き容量を必要とします。空き容量確認と明示同意に失敗した場合は導入しません。
+
+HeadroomはGitHub Device FlowとCopilot Chat用OAuthクライアントIDを使う外部連携です。GitHub公式のContext Kit統合ではないため、利用前に所属組織とGitHubの規約・ポリシーを確認してください。
+
+Headroomの圧縮はログ・JSON・反復ツール出力に高い効果があり、密な自然文は縮まらない場合があります。意味要約やLLMによるローリングサマリーは保証しません。決定・根拠・未解決事項の長期整理は、既存のContext Kit handoffとsource-backed資料管理が担当します。
+
+**停止**はContext Kitが起動したHeadroomだけを終了し、設定マーカーを残してフェイルクローズします。**完全解除**はHeadroomの `unwrap` を呼び、設定を元に戻しますが、管理venvや専用認証ファイルは削除しません。再導入を避けるため残置する設計です。秘密や会話本文をContext Kitのログへ保存しません。
+
 ## 初期設定
 
 1. 設定したいプロジェクトの**フォルダ**をVS Codeで開きます。
@@ -77,13 +95,15 @@ WSL、Remote SSH、Dev Container、ブラウザー版VS Codeでは拡張版を�
 ただし、ツールの選択はCopilotのモデル判断と実行許可にも左右されるため、すべての読み取りで必ず自動実行される保証はありません。
 重要な作業ではツール実行欄を開き、`kit_read`や`kit_context`が実際に呼ばれたことを確認してください。
 
-自動圧縮の対象になるのは、Context Kitのツールを通して読んだ対応ファイルです。
-次の内容を自動で横取りして圧縮することはできません。
+Context KitのMCP単体で自動圧縮の対象になるのは、Context Kitのツールを通して読んだ対応ファイルです。
+次の内容をContext Kit単体で自動的に横取りして圧縮することはできません。
 
 - Copilotの会話履歴全体
 - Copilotが別のツールで直接読んだ内容
 - ターミナルへ流れている途中で、ファイルへ保存されていない出力
 - 対応対象外のソースコードや秘密情報を示すファイル
+
+macOSで前述のHeadroom連携を有効にした場合は、UIの会話履歴を残したまま、Copilotへ送る直前の会話コンテキストを圧縮します。
 
 会話が長くなった場合は、Copilotへ`/context-handoff-save`を提案するよう指示します。
 引き継ぎメモの作成後に利用者が新しいチャットを開き、`/context-handoff-resume`で再開します。

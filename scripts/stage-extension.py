@@ -12,7 +12,7 @@ if out==ROOT or (ROOT in out.parents and out != ROOT/'dist/extension'):
 if out.exists():
     raise SystemExit('Output exists. Use a new output directory; files are not silently deleted.')
 out.mkdir(parents=True)
-for name in ['package.json','extension.cjs','runtime.mjs','http.mjs','README.md']:
+for name in ['package.json','extension.cjs','runtime.mjs','http.mjs','headroom.mjs','README.md']:
     shutil.copyfile(ROOT/'vscode-extension'/name,out/name)
 shutil.copyfile(ROOT/'LICENSE',out/'LICENSE')
 for folder in ['src','project-context','integration/prompts']:

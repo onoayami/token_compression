@@ -1,3 +1,9 @@
+## 0.5.0
+
+- macOSのVisual Studio Code安定版で、利用者が明示同意した場合だけ外部Headroom `0.41.0`を管理venvへ導入し、Copilot送信前の自動圧縮を開始できます。
+- device flow認証、allowlist環境、ビーコン・統計保存抑止、health検証、所有PIDだけの停止、累積再起動上限、設定の`unwrap`復元を追加しました。
+- Headroomの圧縮はログ・JSON・反復ツール出力向けで、意味要約や密な自然文の縮小を保証しません。
+
 ## 0.4.2
 
 - 初期設定時にCopilot用の指示を作成・追記し、対応するログ・JSON・テキスト・Markdownでは `kit_read` を自動的に優先するようにしました。

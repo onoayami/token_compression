@@ -2,7 +2,7 @@
   "name": "contextkit-easy",
   "displayName": "Context Kit — かんたん初期設定",
   "description": "チャットに @contextkit 初期設定 と入力して、根拠付き引き継ぎとMarkdown資料の棚を設定します。",
-  "version": "0.4.2",
+  "version": "0.5.0",
   "publisher": "onoayami",
   "license": "MIT",
   "engines": { "vscode": "^1.102.0" },
@@ -15,7 +15,7 @@
     "virtualWorkspaces": { "supported": false }
   },
   "repository": { "type": "git", "url": "https://github.com/onoayami/token_compression.git" },
-  "files": ["extension.cjs", "runtime.mjs", "http.mjs", "kit/**", "README.md", "LICENSE"],
+  "files": ["extension.cjs", "runtime.mjs", "http.mjs", "headroom.mjs", "kit/**", "README.md", "LICENSE"],
   "contributes": {
     "commands": [
       { "command": "contextkit.setup", "title": "Context Kit: 初期設定を始める" },
@@ -23,13 +23,40 @@
       { "command": "contextkit.stats", "title": "Context Kit: 圧縮状況を見る" },
       { "command": "contextkit.openGlossary", "title": "Context Kit: 用語集を開く" },
       { "command": "contextkit.openDesign", "title": "Context Kit: 設計書を開く" },
-      { "command": "contextkit.disable", "title": "Context Kit: このフォルダで停止する" }
+      { "command": "contextkit.disable", "title": "Context Kit: このフォルダで停止する" },
+      { "command": "contextkit.proxySetup", "title": "Context Kit: 自動圧縮を設定" },
+      { "command": "contextkit.proxyAuth", "title": "Context Kit: Headroomを認証" },
+      { "command": "contextkit.proxyStart", "title": "Context Kit: 自動圧縮を開始" },
+      { "command": "contextkit.proxyStop", "title": "Context Kit: 自動圧縮を停止（フェイルクローズ）" },
+      { "command": "contextkit.proxyStatus", "title": "Context Kit: 自動圧縮の状態" },
+      { "command": "contextkit.proxyUninstall", "title": "Context Kit: 自動圧縮を完全解除" }
     ],
     "mcpServerDefinitionProviders": [{ "id": "contextkit.local", "label": "Context Kit（拡張内蔵）" }],
     "chatParticipants": [{
       "id": "contextkit.assistant", "name": "contextkit", "fullName": "Context Kit 初期設定",
       "description": "初期設定、と入力してください。状況確認・圧縮状況の表示にも対応します。", "isSticky": false,
       "commands": [{ "name": "setup", "description": "初期設定" }, { "name": "status", "description": "共通知識の状況" }, { "name": "stats", "description": "圧縮状況" }]
-    }]
+    }],
+    "configuration": {
+      "title": "Context Kit",
+      "properties": {
+        "contextkit.proxy.port": {
+          "type": "number",
+          "default": 8787,
+          "minimum": 1,
+          "maximum": 65535,
+          "description": "Headroomの127.0.0.1ポート。外部公開は行いません。"
+        },
+        "contextkit.proxy.headroomPath": {
+          "type": "string",
+          "description": "既存の管理済みHeadroom実行ファイル。既定ではContext KitのglobalStorage内venvを使います。"
+        },
+        "contextkit.proxy.python": {
+          "type": "string",
+          "default": "python3",
+          "description": "管理venv作成に使うPython実行ファイル。グローバルHeadroomはインストールしません。"
+        }
+      }
+    }
   }
 }
