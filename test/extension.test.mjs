@@ -36,12 +36,18 @@ async function fixture(t, options = {}) {
   } };
   const vscode = {
     EventEmitter, McpHttpServerDefinition: PositionalHttpDefinition, Uri: { file: uri, parse: parseURI }, env: { remoteName: options.remoteName },
-    workspace: { isTrusted: options.trusted !== false, workspaceFolders: options.noFolders ? [] : [{ name: 'project', uri: uri(root) }],
+    workspace: { isTrusted: options.trusted !== false, workspaceFolders: options.noFolders ? [] :
+      (options.workspaceFolders || [{ name: 'project', uri: uri(root) }]),
       openTextDocument: async value => value, onDidChangeWorkspaceFolders: foldersChanged.event },
     window: {
       showInputBox: async args => { seen.inputs.push(args); return Object.hasOwn(options, 'description') ? options.description : 'テスト用の申込画面'; },
-      showQuickPick: async (items, args) => { seen.quickPicks.push(args); return args.title.includes('対象') ? items[0] : items.find(i => i.value === Boolean(options.chooseDesign)); },
-      showOpenDialog: async () => options.selectedFiles || [],
+      showQuickPick: async (items, args) => {
+        seen.quickPicks.push(args);
+        if (args.title.includes('対象')) return options.cancelRootSelection ? undefined : items[0];
+        if (options.cancelDesignChoice) return undefined;
+        return items.find(i => i.value === Boolean(options.chooseDesign));
+      },
+      showOpenDialog: async args => args.canSelectFiles && Object.hasOwn(options, 'selectedFiles') ? options.selectedFiles : [],
       showInformationMessage: async (...args) => { seen.infos.push(args); return args[1]?.modal ? (options.confirm === false ? undefined : '設定する') : undefined; },
       showErrorMessage: message => { seen.errors.push(message); }, showTextDocument: async value => { seen.opened.push(value); },
     },
@@ -100,6 +106,7 @@ test('confirmed chat wizard registers a real MCP endpoint, creates templates and
   assert.ok(!output.markdown.join('').includes('接続確認済み'));
   assert.equal(output.buttons.length, 2); assert.equal(seen.inputs.length, 1);
   assert.equal(values.get('contextkit.root'), root); assert.equal(values.get('contextkit.enabled'), true);
+  assert.match(await fs.readFile(path.join(root, '.github/copilot-instructions.md'), 'utf8'), /kit_read.*自動的に選ぶ/);
   assert.equal(seen.providerId, 'contextkit.local'); assert.equal(seen.participantId, 'contextkit.assistant');
   const [definition] = await seen.provider.provideMcpServerDefinitions();
   assert.equal(await seen.provider.resolveMcpServerDefinition(definition), definition);
@@ -118,11 +125,19 @@ test('confirmed chat wizard registers a real MCP endpoint, creates templates and
   await assert.rejects(() => fetch(endpoint));
   assert.ok(await fs.stat(path.join(root, 'project-context/catalog.json')));
 });
-test('cancelling final confirmation or purpose input produces no files or enabled state', async t => {
-  for (const options of [{ confirm: false }, { description: undefined }]) {
+test('setup cancellation identifies the exact step and produces no files or enabled state', async t => {
+  const cases = [
+    [{ confirm: false }, '最終確認'],
+    [{ description: undefined }, 'プロジェクト説明'],
+    [{ cancelDesignChoice: true }, '設計書の選択'],
+    [{ chooseDesign: true, selectedFiles: undefined }, 'ファイル選択'],
+    [{ workspaceFolders: [{ name: 'one', uri: uri('/one') }, { name: 'two', uri: uri('/two') }], cancelRootSelection: true }, '作業フォルダの選択'],
+  ];
+  for (const [options, expected] of cases) {
     const { root, chat, values, seen } = await fixture(t, options);
     const output = await chat('初期設定');
-    assert.ok(output.markdown.join('').includes('保存せずに終了'));
+    assert.ok(output.markdown.join('').includes(expected));
+    assert.deepEqual(output.buttons[0], { command: 'contextkit.setup', title: '初期設定をもう一度開く' });
     assert.deepEqual(await fs.readdir(root), []); assert.equal(values.get('contextkit.enabled'), undefined);
     assert.deepEqual(await seen.provider.provideMcpServerDefinitions(), []);
   }
@@ -136,7 +151,10 @@ test('setup in an untrusted workspace or remote environment is blocked without w
 });
 test('no-folder guidance and ordinary help do not create a project or send model requests', async t => {
   const { root, chat, seen } = await fixture(t, { noFolders: true });
-  await chat('初期設定'); assert.ok(seen.infos[0][0].includes('作業用フォルダ'));
+  const setup = await chat('初期設定');
+  assert.ok(setup.markdown.join('').includes('作業フォルダが開かれていない'));
+  assert.equal(setup.buttons[0].command, 'contextkit.setup');
+  assert.ok(seen.infos[0][0].includes('作業用フォルダ'));
   const help = await chat('実装を手伝って'); assert.ok(help.markdown.join('').includes('初期設定専用'));
   assert.equal(help.buttons[0].command, 'contextkit.setup'); assert.deepEqual(await fs.readdir(root), []);
 });
@@ -233,14 +251,15 @@ test('staging uses official-package layout, includes runtime/templates and exclu
   const out = path.join(temp, 'extension');
   const python = process.platform === 'win32' ? 'python' : 'python3';
   const { stdout } = await exec(python, ['scripts/stage-extension.py', '--out', out], { cwd: kitRoot });
-  assert.match(stdout, /Staged extension: 0\.4\.0/);
+  const rootPackage = JSON.parse(await fs.readFile(path.join(kitRoot, 'package.json'), 'utf8'));
+  assert.match(stdout, new RegExp(`Staged extension: ${rootPackage.version.replaceAll('.', '\\.')}`));
   const manifest = JSON.parse(await fs.readFile(path.join(out, 'package.json'), 'utf8'));
   assert.equal(manifest.main, './extension.cjs'); assert.ok(await fs.stat(path.join(out, manifest.main)));
   assert.ok(await fs.stat(path.join(out, 'kit/src/setup.mjs'))); assert.ok(await fs.stat(path.join(out, 'kit/integration/prompts/context-handoff-save.prompt.md')));
+  assert.ok(await fs.stat(path.join(out, 'kit/integration/copilot-instructions.snippet.md')));
   const paths = await fs.readdir(out, { recursive: true });
   assert.ok(!paths.some(p => /(^|[\\/])(test|node_modules|\.context-kit-cache|\.context-kit|dist)([\\/]|$)/.test(p)));
   assert.equal(manifest.contributes.chatParticipants[0].isSticky, false);
-  const rootPackage = JSON.parse(await fs.readFile(path.join(kitRoot, 'package.json'), 'utf8'));
   assert.equal(manifest.version, rootPackage.version);
   await assert.rejects(() => exec(python, ['scripts/stage-extension.py', '--out', out], { cwd: kitRoot }), /Output exists/);
 });

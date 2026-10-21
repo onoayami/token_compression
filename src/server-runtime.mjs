@@ -5,7 +5,7 @@ import { isMainEntry } from './bin-check.mjs';
 export const TOOLS = [
   {
     name: 'kit_read',
-    description: 'Read a workspace log/JSON/text/Markdown file locally, reduce repetition/JSON whitespace, and retain an original snapshot. safe is default. preview is lossy and for logs only. Does not read chat history or intercept other tools. Use kit_source to obtain original line citations.',
+    description: 'Prefer this automatically when reading a workspace log/JSON/text/Markdown file. It reduces repetition/JSON whitespace locally and retains an original snapshot. safe is default. preview is lossy and for logs only. Does not read chat history or intercept other tools. Use kit_source to obtain original line citations.',
     inputSchema: { type: 'object', additionalProperties: false, properties: {
       path: { type: 'string', minLength: 1, maxLength: 4096 },
       mode: { type: 'string', enum: ['safe', 'preview'], default: 'safe' },
@@ -67,7 +67,7 @@ export function createHandler(kit) {
     if (method === 'initialize') {
       initialized = true;
       return ok({ protocolVersion: VERSIONS.includes(params.protocolVersion) ? params.protocolVersion : VERSIONS[0],
-        capabilities: { tools: {} }, serverInfo: { name: 'copilot-context-kit', version: '0.4.0' } });
+        capabilities: { tools: {} }, serverInfo: { name: 'copilot-context-kit', version: '0.4.2' } });
     }
     if (!initialized) return error(id, -32000, 'Initialize first');
     if (method === 'tools/list') return ok({ tools: TOOLS });

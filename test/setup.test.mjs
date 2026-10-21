@@ -15,18 +15,20 @@ async function fixture(t) {
   const write = async (name, text) => { await fs.mkdir(path.dirname(path.join(root, name)), { recursive: true }); await fs.writeFile(path.join(root, name), text); };
   return { root, plan, read, write };
 }
-test('setup planning is read-only and creates only the missing draft shelf and six prompts after approval', async t => {
+test('setup planning is read-only and creates the draft shelf, six prompts and automatic compression instructions after approval', async t => {
   const { root, plan, read } = await fixture(t);
   const proposed = await plan({ description: '  申込画面を改善する  ' });
   assert.deepEqual(await fs.readdir(root), []);
-  assert.equal(proposed.changes.length, 15); assert.equal(proposed.preserved.length, 0);
+  assert.equal(proposed.changes.length, 16); assert.equal(proposed.preserved.length, 0);
   const result = await applySetup(proposed);
-  assert.equal(result.created.length, 15); assert.equal(result.updated.length, 0);
+  assert.equal(result.created.length, 16); assert.equal(result.updated.length, 0);
   assert.match(await read('project-context/overview.md'), /## 何を作るか\n申込画面を改善する/);
   const catalog = JSON.parse(await read('project-context/catalog.json'));
   assert.equal(catalog.documents.length, 6);
   assert.ok(catalog.documents.every(d => d.status === 'draft' && d.version === '未設定'));
   assert.equal((await fs.readdir(path.join(root, '.github/prompts'))).length, 6);
+  assert.match(await read('.github/copilot-instructions.md'), /kit_read.*自動的に選ぶ/);
+  assert.match(await read('.github/copilot-instructions.md'), /会話履歴そのもの.*自動圧縮できない/);
   assert.equal(await exists(path.join(root, '.vscode/mcp.json')), false);
   assert.equal(await exists(path.join(root, '.context-kit-cache')), false);
   assert.equal(await read('.gitignore'), '.context-kit-cache/\n.context-kit/\n');
@@ -37,12 +39,28 @@ test('repeated setup preserves all existing documents, catalog and prompts and b
   await write('.github/prompts/context-read.prompt.md', 'MY PROMPT\n');
   const catalog = await read('project-context/catalog.json');
   const repeated = await plan({ description: 'DO NOT OVERWRITE' });
-  assert.equal(repeated.changes.length, 0); assert.equal(repeated.preserved.length, 15);
+  assert.equal(repeated.changes.length, 0); assert.equal(repeated.preserved.length, 16);
   assert.ok(repeated.warnings.some(w => w.includes('上書き')));
   await applySetup(repeated);
   assert.equal(await read('project-context/overview.md'), '# USER CONTENT\n');
   assert.equal(await read('.github/prompts/context-read.prompt.md'), 'MY PROMPT\n');
   assert.equal(await read('project-context/catalog.json'), catalog);
+});
+test('existing Copilot instructions are preserved and receive one idempotent automatic compression block', async t => {
+  const { plan, write, read } = await fixture(t);
+  const original = '# 自分の指示\r\n既存内容を保持する。';
+  await write('.github/copilot-instructions.md', original);
+  const proposed = await plan();
+  const change = proposed.changes.find(c => c.path === '.github/copilot-instructions.md');
+  assert.equal(change.action, 'append');
+  assert.ok(change.text.startsWith(original + '\r\n\r\n'));
+  await applySetup(proposed);
+  const configured = await read('.github/copilot-instructions.md');
+  assert.ok(configured.startsWith(original + '\r\n\r\n'));
+  assert.equal(configured.match(/context-kit:auto-compression:start/g)?.length, 1);
+  const repeated = await plan();
+  assert.ok(!repeated.changes.some(c => c.path === '.github/copilot-instructions.md'));
+  assert.equal((await read('.github/copilot-instructions.md')).match(/context-kit:auto-compression:start/g)?.length, 1);
 });
 test('existing Markdown designs are registered by path without copying or modifying their content', async t => {
   const { root, plan, write, read } = await fixture(t);
@@ -98,7 +116,7 @@ test('invalid catalog is not silently replaced and creates nothing', async t => 
   assert.deepEqual(await fs.readdir(path.join(root, 'project-context')), ['catalog.json']);
   assert.equal(await read('project-context/catalog.json'), '{invalid');
 });
-test('symlinked setup directories and gitignore are rejected, not followed', async t => {
+test('symlinked setup directories and append targets are rejected, not followed', async t => {
   const { root, plan, write, read } = await fixture(t); await fs.mkdir(path.join(root, 'elsewhere'));
   try { await fs.symlink(path.join(root, 'elsewhere'), path.join(root, 'project-context'), 'dir'); }
   catch (e) { if (['EPERM', 'EACCES'].includes(e.code)) { t.skip('Symlink privilege unavailable'); return; } throw e; }
@@ -106,6 +124,10 @@ test('symlinked setup directories and gitignore are rejected, not followed', asy
   assert.deepEqual(await fs.readdir(path.join(root, 'elsewhere')), []);
   await fs.unlink(path.join(root, 'project-context')); await write('keep.txt', 'KEEP');
   await fs.symlink(path.join(root, 'keep.txt'), path.join(root, '.gitignore'));
+  await assert.rejects(() => plan(), /Unsafe existing setup path/);
+  assert.equal(await read('keep.txt'), 'KEEP');
+  await fs.unlink(path.join(root, '.gitignore')); await fs.mkdir(path.join(root, '.github'), { recursive: true });
+  await fs.symlink(path.join(root, 'keep.txt'), path.join(root, '.github/copilot-instructions.md'));
   await assert.rejects(() => plan(), /Unsafe existing setup path/);
   assert.equal(await read('keep.txt'), 'KEEP');
 });
@@ -119,6 +141,19 @@ test('a newly created or changed setup target after preview aborts preflight wit
   await assert.rejects(() => applySetup(next), /target changed/);
   assert.equal(await exists(path.join(root, 'project-context')), false);
   assert.equal(await read('.gitignore'), 'AFTER\n');
+});
+test('a later append failure rolls back an earlier Copilot instructions append', async t => {
+  const { plan, write, read } = await fixture(t);
+  const instructions = '# KEEP\n', gitignore = '# KEEP IGNORE\n';
+  await write('.github/copilot-instructions.md', instructions);
+  await write('.gitignore', gitignore);
+  const proposed = await plan();
+  const appends = proposed.changes.filter(change => change.action === 'append');
+  assert.deepEqual(appends.map(change => change.path), ['.github/copilot-instructions.md', '.gitignore']);
+  appends[1].text = null;
+  await assert.rejects(() => applySetup(proposed));
+  assert.equal(await read('.github/copilot-instructions.md'), instructions);
+  assert.equal(await read('.gitignore'), gitignore);
 });
 test('partial failure rolls back only new files and retains user data', async t => {
   const { root, plan, write, read } = await fixture(t); await write('keep.txt', 'KEEP');

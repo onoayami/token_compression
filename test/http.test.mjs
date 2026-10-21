@@ -35,7 +35,7 @@ test('loopback MCP supports initialization, notifications, tools and actual comp
   assert.ok(server.token.length >= 43);
   let response = await send(rpc(1, 'initialize', { protocolVersion: '2025-06-18' }));
   assert.equal(response.status, 200); assert.equal(response.headers.get('cache-control'), 'no-store');
-  assert.equal((await response.json()).result.serverInfo.version, '0.4.0');
+  assert.equal((await response.json()).result.serverInfo.version, '0.4.2');
   response = await send({ jsonrpc: '2.0', method: 'notifications/initialized' });
   assert.equal(response.status, 202); assert.equal(await response.text(), '');
   const tools = await (await send(rpc(2, 'tools/list'))).json(); assert.equal(tools.result.tools.length, 4);
