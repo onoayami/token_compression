@@ -318,3 +318,58 @@ test('unstable VS Code variants are rejected before Headroom starts', async t =>
   });
   await assert.rejects(() => manager.start(), error => error.code === 'UNSUPPORTED_APP');
 });
+
+test('a new authentication replaces an unfinished device flow instead of reporting busy', async t => {
+  const state = await fixture(t);
+  const first = state.manager.authenticate();
+  await new Promise(resolve => setImmediate(resolve));
+  const firstChild = state.child;
+  assert.equal((await state.manager.status()).authenticating, true);
+  const second = state.manager.authenticate();
+  await assert.rejects(first, error => error.code === 'HEADROOM_AUTH_CANCELLED');
+  assert.equal(firstChild.signalCode, 'SIGINT');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.notEqual(state.child, firstChild);
+  state.child.crash(0);
+  assert.deepEqual(await second, { authenticated: true });
+  assert.equal((await state.manager.status()).authenticating, false);
+  assert.equal(state.calls.filter(call => call.type === 'spawn' && call.args[0] === 'copilot-auth').length, 2);
+});
+
+test('authentication can be redone while the owned proxy keeps running', async t => {
+  const state = await fixture(t);
+  t.after(() => state.manager.stop());
+  await state.manager.start();
+  const proxy = state.child;
+  const pending = state.manager.authenticate();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(proxy.exitCode, null);
+  state.child.crash(0);
+  assert.deepEqual(await pending, { authenticated: true });
+  await state.manager.restart();
+  assert.equal(proxy.signalCode, 'SIGINT');
+  assert.deepEqual(state.calls.filter(call => call.type === 'spawn').map(call => call.args[0]), ['wrap', 'copilot-auth', 'wrap']);
+});
+
+test('an abandoned device flow times out, stops the login process and allows a retry', async t => {
+  const state = await fixture(t);
+  const pending = state.manager.authenticate({ timeoutMs: 20 });
+  await new Promise(resolve => setImmediate(resolve));
+  const abandoned = state.child;
+  await assert.rejects(pending, error => error.code === 'HEADROOM_AUTH_TIMEOUT');
+  assert.equal(abandoned.signalCode, 'SIGINT');
+  assert.equal((await state.manager.status()).authenticating, false);
+  const retry = state.manager.authenticate();
+  await new Promise(resolve => setImmediate(resolve));
+  state.child.crash(0);
+  assert.deepEqual(await retry, { authenticated: true });
+});
+
+test('disposing cancels an unfinished authentication', async t => {
+  const state = await fixture(t);
+  const pending = state.manager.authenticate();
+  await new Promise(resolve => setImmediate(resolve));
+  await state.manager.dispose();
+  await assert.rejects(pending, error => error.code === 'HEADROOM_AUTH_CANCELLED');
+  assert.equal(state.child.signalCode, 'SIGINT');
+});

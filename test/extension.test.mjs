@@ -105,6 +105,55 @@ test('chat phrase routes setup, automatic compression, status and stats; regular
   assert.equal(determineIntent({ command: 'status' }), 'overview');
   assert.equal(determineIntent({ prompt: '一覧' }), 'overview');
   assert.equal(determineIntent({ prompt: 'アプリの開発を手伝って' }), 'help');
+  assert.equal(determineIntent({ command: 'auth' }), 'proxyAuth');
+  assert.equal(determineIntent({ prompt: 'GitHubとの連携をやり直したい' }), 'proxyAuth');
+  assert.equal(determineIntent({ prompt: 'Headroomを再認証して' }), 'proxyAuth');
+  assert.equal(determineIntent({ prompt: '自動圧縮の認証状態' }), 'proxy');
+});
+test('failed Headroom authentication offers a retry button that reruns authentication', async t => {
+  let attempts = 0;
+  const headroomManager = {
+    authenticate: async () => { attempts++; throw Object.assign(new Error('private detail'), { code: 'HEADROOM_AUTH_TIMEOUT' }); },
+    dispose: async () => {},
+  };
+  const { commands, vscode, seen } = await fixture(t, { headroomManager });
+  const prompts = [];
+  vscode.window.showErrorMessage = async (...args) => { prompts.push(args); return prompts.length === 1 ? args[1] : undefined; };
+  const result = await commands.get('contextkit.proxyAuth')();
+  assert.equal(result.code, 'HEADROOM_AUTH_TIMEOUT');
+  assert.match(prompts[0][0], /有効期限/);
+  assert.equal(prompts[0][1], 'Headroomを認証し直す');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(seen.executes.at(-1), ['contextkit.proxyAuth']);
+  assert.doesNotMatch(prompts[0][0], /private detail/);
+  assert.equal(attempts, 1);
+});
+test('chat /auth restarts the proxy after a successful re-authentication and shows retry on failure', async t => {
+  const calls = [];
+  let fail = false;
+  const headroomManager = {
+    authenticate: async () => { calls.push('authenticate'); if (fail) throw Object.assign(new Error('x'), { code: 'HEADROOM_AUTH_FAILED' }); return { authenticated: true }; },
+    restart: async () => { calls.push('restart'); return { started: true }; },
+    dispose: async () => {},
+  };
+  const { chat, globalValues } = await fixture(t, { headroomManager });
+  const ok = await chat({ command: 'auth' });
+  assert.deepEqual(calls, ['authenticate', 'restart']);
+  assert.equal(globalValues.get('contextkit.proxy.enabled'), true);
+  assert.match(ok.markdown.join(''), /認証が完了/);
+  fail = true;
+  const failed = await chat({ command: 'auth' });
+  assert.match(failed.markdown.join(''), /やり直してください/);
+  assert.deepEqual(failed.buttons, [{ command: 'contextkit.proxyAuth', title: 'Headroomを認証し直す' }]);
+});
+test('a replaced Headroom authentication is not reported as an error', async t => {
+  const headroomManager = {
+    authenticate: async () => { throw Object.assign(new Error('x'), { code: 'HEADROOM_AUTH_CANCELLED' }); },
+    dispose: async () => {},
+  };
+  const { commands, seen } = await fixture(t, { headroomManager });
+  assert.deepEqual(await commands.get('contextkit.proxyAuth')(), { cancelled: true, replaced: true });
+  assert.equal(seen.errors.length, 0);
 });
 test('proxy status distinguishes an unowned process on the configured port', async t => {
   const headroomManager = {

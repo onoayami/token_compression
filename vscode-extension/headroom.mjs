@@ -10,6 +10,8 @@ export const DEFAULT_HEADROOM_PORT = 8787;
 export const MAX_RESTARTS = 3;
 export const MIN_INSTALL_FREE_BYTES = 900 * 1024 * 1024;
 export const MIN_PYTHON = Object.freeze({ major: 3, minor: 10 });
+// GitHub device codes expire after 15 minutes; an abandoned login must not block a retry forever.
+export const AUTH_TIMEOUT_MS = 15 * 60 * 1000;
 
 const execFile = promisify(nodeExecFile);
 const PRIVACY_VALUES = Object.freeze({
@@ -113,6 +115,7 @@ export class HeadroomManager {
   #appName;
   #onState;
   #child = null;
+  #auth = null;
   #stopping = false;
   #enabled = false;
   #restartCount = 0;
@@ -220,6 +223,10 @@ export class HeadroomManager {
     const child = this.#child;
     this.#child = null;
     this.#stopping = true;
+    await this.#terminate(child);
+  }
+
+  async #terminate(child) {
     if (!child || child.exitCode !== null && child.exitCode !== undefined) return;
     const exited = new Promise(resolve => child.once?.('exit', resolve));
     try { child.kill?.('SIGINT'); } catch { /* The process may have exited between the check and signal. */ }
@@ -279,6 +286,13 @@ export class HeadroomManager {
     return this.#transition;
   }
 
+  restart() {
+    this.#enabled = true;
+    this.#restartCount = 0;
+    this.#transition = this.#transition.catch(() => {}).then(() => this.#stopNow()).then(() => this.#startNow());
+    return this.#transition;
+  }
+
   stop() {
     this.#enabled = false;
     this.#restartCount = 0;
@@ -293,7 +307,16 @@ export class HeadroomManager {
     const authenticated = await this.#authenticated().then(() => true).catch(() => false);
     const running = Boolean(this.#child) && await this.#healthy();
     const portInUse = !this.#child && await this.#healthy();
-    return { authenticated, running, portInUse, owned: running, enabled: this.#enabled, port: this.#port };
+    return { authenticated, authenticating: Boolean(this.#auth), running, portInUse, owned: running, enabled: this.#enabled, port: this.#port };
+  }
+
+  async cancelAuthentication() {
+    const attempt = this.#auth;
+    if (!attempt) return { cancelled: false };
+    attempt.cancelled = true;
+    if (this.#auth === attempt) this.#auth = null;
+    await this.#terminate(attempt.child);
+    return { cancelled: true };
   }
 
   async unwrap() {
@@ -305,15 +328,17 @@ export class HeadroomManager {
     return { unwrapped: true };
   }
 
-  async authenticate({ onDeviceFlow = () => {} } = {}) {
+  async authenticate({ onDeviceFlow = () => {}, timeoutMs = AUTH_TIMEOUT_MS } = {}) {
     if (this.#platform !== 'darwin') throw Object.assign(new Error('Headroom authentication is supported on macOS only.'), { code: 'UNSUPPORTED_PLATFORM' });
     this.#assertSupportedApp();
     await this.#assertVersion();
-    if (this.#child) throw Object.assign(new Error('Headroom is already running.'), { code: 'HEADROOM_BUSY' });
+    // A new request replaces an unfinished login so the user can always restart the device flow.
+    await this.cancelAuthentication();
     const child = this.#spawn(this.#command, ['copilot-auth', 'login'], {
       cwd: this.#root, env: this.#environment(), shell: false, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
     });
-    this.#child = child;
+    const attempt = { child, cancelled: false };
+    this.#auth = attempt;
     let buffer = '', pendingUrl = null, pendingCode = null, flowShown = false;
     const inspect = chunk => {
       buffer += String(chunk || '');
@@ -334,8 +359,26 @@ export class HeadroomManager {
     child.stderr?.on?.('data', inspect);
     child.stdout?.resume?.();
     child.stderr?.resume?.();
-    const exitCode = await new Promise(resolve => child.once?.('exit', code => resolve(code ?? 0)));
-    if (this.#child === child) this.#child = null;
+    let timedOut = false;
+    const exitCode = await new Promise(resolve => {
+      let settled = false;
+      const finish = code => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(code);
+      };
+      const timer = setTimeout(() => {
+        timedOut = true;
+        void this.#terminate(child).finally(() => finish(null));
+      }, timeoutMs);
+      timer.unref?.();
+      child.once?.('exit', code => finish(code ?? 0));
+      child.once?.('error', () => finish(1));
+    });
+    if (this.#auth === attempt) this.#auth = null;
+    if (attempt.cancelled) throw Object.assign(new Error('Headroom authentication was replaced or cancelled.'), { code: 'HEADROOM_AUTH_CANCELLED' });
+    if (timedOut) throw Object.assign(new Error('Headroom authentication timed out.'), { code: 'HEADROOM_AUTH_TIMEOUT' });
     if (exitCode !== 0) throw Object.assign(new Error('Headroom authentication did not complete.'), { code: 'HEADROOM_AUTH_FAILED' });
     return { authenticated: true };
   }
@@ -380,6 +423,7 @@ export class HeadroomManager {
   }
 
   async dispose() {
+    await this.cancelAuthentication();
     await this.stop();
   }
 }

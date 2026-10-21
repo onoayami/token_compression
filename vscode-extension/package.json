@@ -2,7 +2,7 @@
   "name": "contextkit-easy",
   "displayName": "Context Kit — かんたん初期設定",
   "description": "チャットに @contextkit 初期設定 と入力して、根拠付き引き継ぎとMarkdown資料の棚を設定します。",
-  "version": "0.5.4",
+  "version": "0.5.5",
   "publisher": "onoayami",
   "license": "MIT",
   "engines": { "vscode": "^1.102.0" },
@@ -35,7 +35,7 @@
     "chatParticipants": [{
       "id": "contextkit.assistant", "name": "contextkit", "fullName": "Context Kit 初期設定",
       "description": "初期設定と自動圧縮の設定、状況確認に対応します。", "isSticky": false,
-      "commands": [{ "name": "setup", "description": "初期設定" }, { "name": "compress", "description": "自動圧縮を設定" }, { "name": "status", "description": "共通知識の状況" }, { "name": "stats", "description": "圧縮状況" }]
+      "commands": [{ "name": "setup", "description": "初期設定" }, { "name": "compress", "description": "自動圧縮を設定" }, { "name": "auth", "description": "Headroom認証（GitHub連携）をやり直す" }, { "name": "status", "description": "共通知識の状況" }, { "name": "stats", "description": "圧縮状況" }]
     }],
     "configuration": {
       "title": "Context Kit",
