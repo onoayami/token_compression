@@ -106,6 +106,7 @@ test('confirmed chat wizard registers a real MCP endpoint, creates templates and
   assert.ok(!output.markdown.join('').includes('接続確認済み'));
   assert.equal(output.buttons.length, 2); assert.equal(seen.inputs.length, 1);
   assert.equal(values.get('contextkit.root'), root); assert.equal(values.get('contextkit.enabled'), true);
+  assert.match(await fs.readFile(path.join(root, '.github/copilot-instructions.md'), 'utf8'), /kit_read.*自動的に選ぶ/);
   assert.equal(seen.providerId, 'contextkit.local'); assert.equal(seen.participantId, 'contextkit.assistant');
   const [definition] = await seen.provider.provideMcpServerDefinitions();
   assert.equal(await seen.provider.resolveMcpServerDefinition(definition), definition);
@@ -255,6 +256,7 @@ test('staging uses official-package layout, includes runtime/templates and exclu
   const manifest = JSON.parse(await fs.readFile(path.join(out, 'package.json'), 'utf8'));
   assert.equal(manifest.main, './extension.cjs'); assert.ok(await fs.stat(path.join(out, manifest.main)));
   assert.ok(await fs.stat(path.join(out, 'kit/src/setup.mjs'))); assert.ok(await fs.stat(path.join(out, 'kit/integration/prompts/context-handoff-save.prompt.md')));
+  assert.ok(await fs.stat(path.join(out, 'kit/integration/copilot-instructions.snippet.md')));
   const paths = await fs.readdir(out, { recursive: true });
   assert.ok(!paths.some(p => /(^|[\\/])(test|node_modules|\.context-kit-cache|\.context-kit|dist)([\\/]|$)/.test(p)));
   assert.equal(manifest.contributes.chatParticipants[0].isSticky, false);
