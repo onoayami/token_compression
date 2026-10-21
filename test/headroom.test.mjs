@@ -155,7 +155,7 @@ test('device-flow authentication uses the restricted environment and exposes onl
   state.child.stderr.emit('data', 'ignored secret=hidden\nCode: ABCD-1234\n');
   assert.equal(state.calls.at(-1).type, 'spawn');
   assert.equal(state.calls.at(-1).args.join(' '), 'copilot-auth login');
-  assert.equal(state.calls.at(-1).options.env.PATH, `${path.dirname(state.paths.command)}${path.delimiter}/bin`);
+  assert.equal(state.calls.at(-1).options.env.PATH, `${path.dirname(state.paths.command)}:/bin`);
   assert.equal(state.calls.at(-1).options.env.GITHUB_TOKEN, undefined);
   state.child.crash(0);
   await pending;
@@ -178,9 +178,12 @@ test('settings path is the macOS stable user settings location', () => {
 });
 
 test('install uses the managed venv and exact third-party version after space check', async t => {
-  const state = await fixture(t);
+  const state = await fixture(t, {
+    fsImpl: { mkdir: async () => {}, access: async () => {}, statfs: async () => ({ bavail: 2_000_000, bsize: 1024 }) },
+  });
   await state.manager.install({ python: '/usr/bin/python3' });
   const installs = state.calls.filter(call => call.type === 'exec');
+  assert.equal(installs[0].command, '/usr/bin/python3');
   assert.deepEqual(installs[0].args, ['--version']);
   assert.deepEqual(installs[1].args, ['-m', 'venv', state.paths.venv]);
   assert.deepEqual(installs[2].args, [

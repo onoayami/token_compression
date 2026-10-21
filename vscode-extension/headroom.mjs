@@ -32,7 +32,7 @@ const delay = milliseconds => new Promise(resolve => setTimeout(resolve, millise
 
 export function headroomSettingsPath({ platform = process.platform, home = os.homedir() } = {}) {
   if (platform !== 'darwin') throw new Error('Headroom Copilot integration is supported on macOS only.');
-  return path.join(home, 'Library', 'Application Support', 'Code', 'User', 'settings.json');
+  return path.posix.join(home, 'Library', 'Application Support', 'Code', 'User', 'settings.json');
 }
 
 export function isStableVisualStudioCode(appName = 'Visual Studio Code') {
@@ -57,7 +57,7 @@ export function buildHeadroomEnvironment({
   storagePath,
   baseEnv = process.env,
   platform = process.platform,
-  delimiter = path.delimiter,
+  delimiter = platform === 'win32' ? path.win32.delimiter : path.posix.delimiter,
   forInstall = false,
 } = {}) {
   const paths = managedHeadroomPaths(storagePath, { platform });
@@ -353,7 +353,8 @@ export class HeadroomManager {
     }
     const paths = managedHeadroomPaths(this.#storagePath, { platform: this.#platform });
     const env = this.#environment({ forInstall: true });
-    const candidates = path.isAbsolute(python) ? [python] : ['/opt/homebrew/bin/python3', '/usr/local/bin/python3', '/usr/bin/python3'];
+    const pathApi = this.#platform === 'win32' ? path.win32 : path.posix;
+    const candidates = pathApi.isAbsolute(python) ? [python] : ['/opt/homebrew/bin/python3', '/usr/local/bin/python3', '/usr/bin/python3'];
     let pythonPath = null;
     for (const candidate of candidates) {
       if (!await this.#fs.access(candidate).then(() => true).catch(() => false)) continue;
