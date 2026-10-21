@@ -70,6 +70,7 @@
 ## macOS Headroom連携の追加境界
 
 - Headroom `0.41.0` はVSIXへ同梱せず、利用者の明示同意後にContext Kitのglobal storage内の管理venvへPyPIから導入する。第三者Apache-2.0依存、ネット接続、約730MBの実測使用量と約1GB弱の空き容量が必要である。
+- 指定ポートで稼働中のプロセスは、`lsof`/`ps`で確認したコマンドラインが管理領域の `headroom wrap vscode --port <設定ポート>`（またはその子プロセス）と一致する場合だけ、以前のContext Kitが残したものとして終了・再起動する。それ以外のプロセスは終了しない。ウィンドウを閉じるときは自分が起動した子プロセスだけを止める。
 - Context KitはHeadroomの設定ファイルを直接編集しない。`wrap vscode` と `unwrap vscode`だけを呼び、Headroomを設定マーカーの唯一の所有者とする。
 - Headroomの子プロセスはallowlist環境で起動する。`GH_TOKEN`、`GITHUB_TOKEN`、`GITHUB_COPILOT_*`、`COPILOT_*`、ログ・OTEL・license/cloud/API-key系環境変数は継承しない。認証時もVS Code terminalの環境overlayを使わず、`shell:false`の直接spawnを使う。runtimeのPATHから`/usr/bin`を外し、Keychainや`gh`のfallback探索を抑止する。
 - `HEADROOM_BEACON=off`、`DO_NOT_TRACK=1`、`HEADROOM_TELEMETRY=off`、`HEADROOM_UPDATE_CHECK=off`、`HEADROOM_USAGE_REPORTING=0`、`HF_HUB_OFFLINE=1`、`TRANSFORMERS_OFFLINE=1`、`HEADROOM_MODE=token`、`HEADROOM_STATELESS=1`、`HEADROOM_NO_SUBSCRIPTION_TRACKING=1`、専用workspaceを固定する。`HEADROOM_OFFLINE=1`はCopilot認証を遮断するため設定しない。

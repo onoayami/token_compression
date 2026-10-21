@@ -242,8 +242,18 @@ kit_readでrequirements.mdを読んでください。
 - 約1GB弱の空き容量があるか確認します。
 - **Context Kit: Headroomを認証** を実行します。
 - **Context Kit: 自動圧縮の状態** でポート競合を確認します。
+- 「以前のContext Kitが起動したHeadroomが残っています」と表示された場合は、**Context Kit: 自動圧縮を開始** で引き継げます（VS Codeの再読み込みや拡張の更新後に起こります）。
+- 「Context Kit以外のプロセスが…使用しています」と表示された場合、Context Kitはそのプロセスを終了しません。`lsof -nP -iTCP:8787 -sTCP:LISTEN` で確認して終了するか、設定 `contextkit.proxy.port` を空いているポートに変えてください。
 
 ### GitHubとの連携（Headroom認証）がうまくいかない
+
+認証の流れ：
+1. **Context Kit: Headroomを認証** を実行します。
+2. 右下の通知の **コードをコピーしてGitHubを開く** を押します。
+3. 開いたGitHubのページにコードを貼り付けて続行し、承認します。
+4. VS Codeに戻って待つと、自動で完了し自動圧縮が始まります。
+
+うまくいかないとき：
 
 - **Context Kit: Headroomを認証** をもう一度実行するか、チャットで `@contextkit /auth` と入力します。未完了の認証は自動で中止され、新しいURLとコードで最初からやり直せます。
 - 認証は15分で自動的に打ち切られます。失敗・期限切れの通知に表示される **Headroomを認証し直す** ボタンからもやり直せます。

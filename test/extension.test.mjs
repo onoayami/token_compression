@@ -163,8 +163,41 @@ test('proxy status distinguishes an unowned process on the configured port', asy
   };
   const { commands, seen } = await fixture(t, { headroomManager });
   await commands.get('contextkit.proxyStatus')();
-  assert.match(seen.infos.at(-1)[0], /別プロセスが127\.0\.0\.1:8787で稼働/);
+  assert.match(seen.infos.at(-1)[0], /Context Kit以外のプロセスが127\.0\.0\.1:8787を使用/);
   assert.match(seen.infos.at(-1)[0], /所有・停止しません/);
+});
+test('proxy status explains that a leftover Context Kit proxy can be taken over', async t => {
+  const headroomManager = {
+    status: async () => ({ running: false, portInUse: false, leftover: true, authenticated: true, port: 8787 }),
+    dispose: async () => {},
+  };
+  const { commands, seen } = await fixture(t, { headroomManager });
+  await commands.get('contextkit.proxyStatus')();
+  assert.match(seen.infos.at(-1)[0], /以前のContext Kitが起動したHeadroom.*「自動圧縮を開始」で引き継げます/);
+});
+test('the device flow notice copies the code and opens GitHub in one step', async t => {
+  let release;
+  const flowDone = new Promise(resolve => { release = resolve; });
+  const headroomManager = {
+    authenticate: async ({ onDeviceFlow }) => { onDeviceFlow({ url: 'https://github.com/login/device', code: 'ABCD-1234' }); await flowDone; return { authenticated: true }; },
+    restart: async () => ({ started: true }),
+    dispose: async () => {},
+  };
+  const { commands, seen, vscode } = await fixture(t, { headroomManager });
+  const copied = [], opened = [];
+  vscode.env.clipboard = { writeText: async text => { copied.push(text); } };
+  vscode.env.openExternal = async value => { opened.push(String(value)); return true; };
+  const shown = vscode.window.showInformationMessage;
+  vscode.window.showInformationMessage = async (...args) => { const result = await shown(...args); return args.includes('コードをコピーしてGitHubを開く') ? 'コードをコピーしてGitHubを開く' : result; };
+  const running = commands.get('contextkit.proxyAuth')();
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.match(seen.infos[0][0], /ABCD-1234/);
+  assert.match(seen.infos[0][0], /①.*②.*③/s);
+  assert.deepEqual(copied, ['ABCD-1234']);
+  assert.equal(opened.length, 1);
+  assert.match(opened[0], /github\.com\/login\/device/);
+  release();
+  await running;
 });
 test('chat /compress opens the automatic compression installation flow', async t => {
   let installs = 0;

@@ -14,7 +14,7 @@ export function determineIntent(request) {
   return 'help';
 }
 export function httpDefinition(vscode, endpoint, token) {
-  const label = 'Context Kit（拡張内蔵）', uri = vscode.Uri.parse(endpoint), headers = { Authorization: `Bearer ${token}` }, version = '0.5.5';
+  const label = 'Context Kit（拡張内蔵）', uri = vscode.Uri.parse(endpoint), headers = { Authorization: `Bearer ${token}` }, version = '0.5.6';
   // The stable API has used positional and object-shaped constructor variants.
   // Validate the constructed fields; do not silently register an unusable endpoint.
   for (const create of [
@@ -153,7 +153,8 @@ export async function activate(context, vscode, {
   const proxyStatus = async () => {
     const status = await requireHeadroom().status();
     const message = status.running ? `Headroom自動圧縮は稼働中です（127.0.0.1:${status.port}）。` :
-      status.portInUse ? `別プロセスが127.0.0.1:${status.port}で稼働しています。Context Kitは所有・停止しません。` :
+      status.leftover ? `以前のContext Kitが起動したHeadroomが127.0.0.1:${status.port}に残っています。「自動圧縮を開始」で引き継げます。` :
+      status.portInUse ? `Context Kit以外のプロセスが127.0.0.1:${status.port}を使用しています。Context Kitは所有・停止しません。` :
       status.authenticated ? 'Headroomは停止中です。停止中はCopilotを迂回せず接続失敗になります。' :
       'Headroom認証が必要です。認証コマンドを実行してください。';
     vscode.window.showInformationMessage?.(message);
@@ -177,10 +178,16 @@ export async function activate(context, vscode, {
     try {
       await manager.authenticate({
         onDeviceFlow: ({ url, code }) => {
-          const notice = vscode.window.showInformationMessage?.(`Headroom認証を完了してください。\nURL: ${url}\nコード: ${code}\n\nうまくいかない場合は「Context Kit: Headroomを認証」をもう一度実行すると、新しいコードで最初からやり直せます。`, '認証ページを開く');
-          void notice?.then(choice => {
-            if (choice === '認証ページを開く') void vscode.env.openExternal?.(vscode.Uri.parse(url));
-          });
+          const open = 'コードをコピーしてGitHubを開く';
+          const notice = vscode.window.showInformationMessage?.(
+            `GitHubとの連携（Headroom認証）\n① 「${open}」を押す\n② 開いたGitHubのページにコード「${code}」を貼り付けて続行し、承認する\n③ このまま待つと自動で完了します（15分以内）\n\nページ: ${url}\nうまくいかない場合は「Context Kit: Headroomを認証」をもう一度実行すると、新しいコードで最初からやり直せます。`,
+            open);
+          void Promise.resolve(notice).then(async choice => {
+            if (choice !== open) return;
+            await Promise.resolve(vscode.env.clipboard?.writeText?.(code)).catch(() => {});
+            await vscode.env.openExternal?.(vscode.Uri.parse(url));
+            vscode.window.showInformationMessage?.(`コード「${code}」をコピーしました。GitHubのページに貼り付けて承認してください。完了すると自動で自動圧縮を開始します。`);
+          }).catch(() => {});
         },
       });
     } catch (error) {
@@ -239,7 +246,7 @@ export async function activate(context, vscode, {
     HEADROOM_INSUFFICIENT_SPACE: 'Headroom導入に必要な空き容量が不足しています。約1GB弱を確保して再試行してください。',
     HEADROOM_PYTHON_NOT_FOUND: 'Python 3.10以上が見つかりません。設定にPythonの絶対パスを指定してください。',
     HEADROOM_UNHEALTHY: 'Headroomが正常なhealth応答を返しません。ポート競合または導入状態を確認してください。',
-    HEADROOM_PORT_IN_USE: '指定ポートで別のHeadroomが稼働しています。既存プロセスは終了せず、ポート設定を確認してください。',
+    HEADROOM_PORT_IN_USE: 'Context Kit以外のプロセスが自動圧縮用のポート（既定8787）を使用しています。Context Kitはそのプロセスを終了しません。そのプロセスを終了するか、設定「contextkit.proxy.port」を空いているポートに変えてから「自動圧縮を開始」を実行してください。',
   };
   const AUTH_RETRY_CODES = new Set(['HEADROOM_AUTH_REQUIRED', 'HEADROOM_AUTH_FAILED', 'HEADROOM_AUTH_TIMEOUT']);
   const AUTH_RETRY_LABEL = 'Headroomを認証し直す';
