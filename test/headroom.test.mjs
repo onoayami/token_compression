@@ -230,11 +230,21 @@ test('installation stops with fixed guidance when managed storage is low on spac
 
 test('abnormal exits are restarted only within the bounded restart budget', async t => {
   const state = await fixture(t);
+  t.after(() => state.manager.stop());
   await state.manager.start();
-  for (let attempt = 0; attempt < 4; attempt++) {
+  const waitForSpawnCount = async expected => {
+    const deadline = Date.now() + 5_000;
+    while (state.calls.filter(call => call.type === 'spawn').length < expected && Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    assert.equal(state.calls.filter(call => call.type === 'spawn').length, expected);
+  };
+  for (let attempt = 0; attempt < 3; attempt++) {
     state.child.crash();
-    await new Promise(resolve => setTimeout(resolve, attempt === 3 ? 50 : (attempt + 1) * 500 + 50));
+    await waitForSpawnCount(attempt + 2);
   }
+  state.child.crash();
+  await new Promise(resolve => setTimeout(resolve, 100));
   assert.equal(state.calls.filter(call => call.type === 'spawn').length, 4);
   await state.manager.stop();
 });
