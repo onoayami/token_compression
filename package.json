@@ -1,6 +1,6 @@
 {
   "name": "copilot-context-kit",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "private": true,
   "type": "module",
   "description": "Local-first context reduction and source-backed handoff starter for VS Code Copilot",

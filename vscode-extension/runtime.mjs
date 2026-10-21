@@ -12,7 +12,7 @@ export function determineIntent(request) {
   return 'help';
 }
 export function httpDefinition(vscode, endpoint, token) {
-  const label = 'Context Kit（拡張内蔵）', uri = vscode.Uri.parse(endpoint), headers = { Authorization: `Bearer ${token}` }, version = '0.5.0';
+  const label = 'Context Kit（拡張内蔵）', uri = vscode.Uri.parse(endpoint), headers = { Authorization: `Bearer ${token}` }, version = '0.5.1';
   // The stable API has used positional and object-shaped constructor variants.
   // Validate the constructed fields; do not silently register an unusable endpoint.
   for (const create of [
@@ -39,7 +39,7 @@ export async function activate(context, vscode, {
   exposeLifecycle = false,
 } = {}) {
   const moduleAt = name => import(pathToFileURL(path.join(kitRoot, 'src', name)).href);
-  const [{ ContextKit }, { createHandler }, { planSetup, applySetup }, { formatContextOverview, ContextRegistry }, { formatStats }] = await Promise.all([
+  const [{ ContextKit }, { createHandler }, { planSetup, applySetup, planDocumentRegistration, applyDocumentRegistration }, { formatContextOverview }, { formatStats }] = await Promise.all([
     moduleAt('core.mjs'), moduleAt('server.mjs'), moduleAt('setup.mjs'), moduleAt('context.mjs'), moduleAt('report.mjs'),
   ]);
   const changed = new vscode.EventEmitter();
@@ -200,12 +200,26 @@ export async function activate(context, vscode, {
     await context.globalState.update('contextkit.proxy.enabled', false);
     return result;
   };
-  const openDoc = async id => {
-    const value = requireKit(), catalog = await new ContextRegistry(value).catalog();
-    const entry = catalog?.documents.find(d => d.id === id);
-    if (!entry) throw new Error('資料が登録されていません。');
-    const filename = await value.sourcePath(entry.path);
-    await vscode.window.showTextDocument(vscode.Uri.file(filename));
+  const registerDocuments = async kind => {
+    const value = requireKit(), glossary = kind === 'glossary';
+    const label = glossary ? '用語集' : '設計書';
+    const selected = await vscode.window.showOpenDialog({
+      canSelectFiles: true,
+      canSelectFolders: false,
+      canSelectMany: !glossary,
+      defaultUri: vscode.Uri.file(value.root),
+      filters: { Markdown: ['md'] },
+      openLabel: `この${label}を登録する`,
+      title: `${label}を登録`,
+    });
+    if (!selected?.length) return { cancelled: true };
+    const plan = await planDocumentRegistration({ root: value.root, kind, documentPaths: selected.map(uri => uri.fsPath) });
+    const detail = `現在の登録:\n${plan.beforePaths.map(item => `- ${item}`).join('\n')}\n\n新しい登録:\n${plan.selectedPaths.map(item => `- ${item}`).join('\n')}\n\nファイル本体は変更しません。`;
+    const approved = await vscode.window.showInformationMessage(`${label}の登録をこの内容に置き換えますか？`, { modal: true, detail }, '登録する');
+    if (approved !== '登録する') return { cancelled: true };
+    const result = await applyDocumentRegistration(plan);
+    vscode.window.showInformationMessage(`${label}を${result.registered.length}件登録しました。`);
+    return result;
   };
   const errorMessages = {
     UNSUPPORTED_PLATFORM: '自動圧縮はmacOSのデスクトップ版VS Codeでのみ利用できます。',
@@ -230,7 +244,7 @@ export async function activate(context, vscode, {
     }
   };
   for (const [name, callback] of Object.entries({ setup, overview: showOverview, stats: showStats,
-    openGlossary: () => openDoc('glossary'), openDesign: () => openDoc('design'),
+    registerGlossary: () => registerDocuments('glossary'), registerDesign: () => registerDocuments('design'),
     proxySetup, proxyAuth, proxyStart, proxyStop, proxyStatus, proxyUninstall,
     disable: async () => { await context.workspaceState.update('contextkit.enabled', false); await stop(); vscode.window.showInformationMessage('このフォルダで停止しました。資料ファイルは削除していません。'); } })) {
     context.subscriptions.push(vscode.commands.registerCommand(`contextkit.${name}`, safeCommand(callback)));
@@ -251,9 +265,11 @@ export async function activate(context, vscode, {
           stream.button({ command: 'contextkit.setup', title: '初期設定をもう一度開く' });
         }
         else {
-          stream.markdown(`**初期設定を保存しました。接続確認は次の操作で行います。**\n\n新規作成 ${result.created.length}件、追記 ${result.updated.length}件。既存の資料は上書きしていません。\n\n${result.warnings.join('\n\n')}\n\n通常のCopilotには、対応するログ・JSON・テキスト・Markdownを読む際にkit_readを優先する指示を追加しました。モデル判断や実行許可によっては自動で呼ばれない場合があります。\n\nHeadroomを設定すると、macOSでは送信前にログ・JSON・反復ツール出力を自動圧縮できます。密な自然文は縮まらない場合があり、意味要約や決定事項の長期整理は既存のhandoff・資料管理が担当します。\n\n「kit_contextで共通知識の一覧を見せて」と依頼し、接続とツール実行を確認してください。\n\n用語集や設計書は、下のボタンから開けます。`);
-          stream.button({ command: 'contextkit.openGlossary', title: '用語集を開く' });
-          stream.button({ command: 'contextkit.openDesign', title: '設計書を開く' });
+          stream.markdown(`**初期設定を保存しました。接続確認は次の操作で行います。**\n\n新規作成 ${result.created.length}件、追記 ${result.updated.length}件。既存の資料は上書きしていません。\n\n${result.warnings.join('\n\n')}\n\n通常のCopilotには、対応するログ・JSON・テキスト・Markdownを読む際にkit_readを優先する指示を追加しました。モデル判断や実行許可によっては自動で呼ばれない場合があります。\n\nHeadroomを設定すると、macOSでは送信前にログ・JSON・反復ツール出力を自動圧縮できます。密な自然文は縮まらない場合があり、意味要約や決定事項の長期整理は既存のhandoff・資料管理が担当します。`);
+          stream.button({ command: 'contextkit.proxySetup', title: '自動圧縮を設定する' });
+          stream.markdown('\n\n「kit_contextで共通知識の一覧を見せて」と依頼し、接続とツール実行を確認してください。\n\n既存の用語集や設計書がある場合は、下のボタンから登録できます。');
+          stream.button({ command: 'contextkit.registerGlossary', title: '用語集を登録する' });
+          stream.button({ command: 'contextkit.registerDesign', title: '設計書を登録する' });
         }
       } else if (intent === 'overview') stream.markdown(fenced(formatContextOverview(JSON.parse(await requireKit().context()))));
       else if (intent === 'stats') stream.markdown(fenced(formatStats(await requireKit().stats())));

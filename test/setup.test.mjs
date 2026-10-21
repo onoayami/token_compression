@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { planSetup, applySetup, renameWithRetry } from '../src/setup.mjs';
+import { planSetup, applySetup, planDocumentRegistration, applyDocumentRegistration, renameWithRetry } from '../src/setup.mjs';
 const templateRoot = fileURLToPath(new URL('../', import.meta.url));
 const exists = async filename => fs.access(filename).then(() => true, () => false);
 async function fixture(t) {
@@ -78,6 +78,42 @@ test('existing catalog is not changed by newly supplied design paths', async t =
   const proposed = await plan({ designPaths: ['missing.md'] });
   assert.ok(proposed.warnings.some(w => w.includes('既存の台帳')));
   await applySetup(proposed); assert.equal(await read('project-context/catalog.json'), before);
+});
+test('document registration planning is read-only and atomically replaces glossary and design paths', async t => {
+  const { root, plan, read, write } = await fixture(t);
+  await applySetup(await plan());
+  await write('docs/glossary.md', '# GLOSSARY\n');
+  await write('docs/design.md', '# DESIGN\n');
+  await write('docs/second.md', '# SECOND\n');
+  const before = await read('project-context/catalog.json');
+  const glossaryPlan = await planDocumentRegistration({ root, kind: 'glossary', documentPaths: ['docs/glossary.md'] });
+  assert.equal(await read('project-context/catalog.json'), before);
+  await applyDocumentRegistration(glossaryPlan);
+  const designPlan = await planDocumentRegistration({
+    root,
+    kind: 'design',
+    documentPaths: [path.join(root, 'docs/design.md'), 'docs/second.md'],
+  });
+  await applyDocumentRegistration(designPlan);
+  const documents = JSON.parse(await read('project-context/catalog.json')).documents;
+  assert.equal(documents.find(document => document.kind === 'glossary').path, 'docs/glossary.md');
+  assert.deepEqual(documents.filter(document => document.kind === 'design').map(document => [document.id, document.path]),
+    [['design', 'docs/design.md'], ['design-2', 'docs/second.md']]);
+  assert.equal(await read('docs/glossary.md'), '# GLOSSARY\n');
+  assert.equal(await read('docs/design.md'), '# DESIGN\n');
+});
+test('document registration rejects stale plans and paths already registered as another kind', async t => {
+  const { root, plan, write } = await fixture(t);
+  await applySetup(await plan());
+  await write('docs/glossary.md', '# GLOSSARY\n');
+  const registration = await planDocumentRegistration({ root, kind: 'glossary', documentPaths: ['docs/glossary.md'] });
+  await fs.appendFile(path.join(root, 'project-context/catalog.json'), '\n');
+  await assert.rejects(() => applyDocumentRegistration(registration), /Catalog changed/);
+  await assert.rejects(() => planDocumentRegistration({
+    root,
+    kind: 'glossary',
+    documentPaths: ['project-context/overview.md'],
+  }), /already registered/);
 });
 test('gitignore appending preserves existing text, CRLF and permissions, protects against earlier negations', async t => {
   const { root, plan, write, read } = await fixture(t);

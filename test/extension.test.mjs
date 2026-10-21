@@ -29,7 +29,7 @@ async function fixture(t, options = {}) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'context-kit-extension-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const commands = new Map(), values = new Map(Object.entries(options.state || {})), globalValues = new Map();
-  const seen = { infos: [], errors: [], opened: [], quickPicks: [], inputs: [], executes: [], provider: null, participant: null };
+  const seen = { infos: [], errors: [], opened: [], quickPicks: [], inputs: [], openDialogs: [], executes: [], provider: null, participant: null };
   const foldersChanged = new EventEmitter();
   const context = { extensionPath: path.join(kitRoot, 'vscode-extension'), subscriptions: [], globalStorageUri: uri(path.join(root, 'global')),
     globalState: { get: key => globalValues.get(key), update: async (key, value) => { globalValues.set(key, value); } }, workspaceState: {
@@ -50,8 +50,16 @@ async function fixture(t, options = {}) {
         if (options.cancelDesignChoice) return undefined;
         return items.find(i => i.value === Boolean(options.chooseDesign));
       },
-      showOpenDialog: async args => args.canSelectFiles && Object.hasOwn(options, 'selectedFiles') ? options.selectedFiles : [],
-      showInformationMessage: async (...args) => { seen.infos.push(args); return args[1]?.modal ? (options.confirm === false ? undefined : '設定する') : undefined; },
+      showOpenDialog: async args => {
+        seen.openDialogs.push(args);
+        if (!args.canSelectFiles) return [];
+        if (args.title?.includes('登録') && Object.hasOwn(options, 'registrationFiles')) return options.registrationFiles;
+        return Object.hasOwn(options, 'selectedFiles') ? options.selectedFiles : [];
+      },
+      showInformationMessage: async (...args) => {
+        seen.infos.push(args);
+        return args[1]?.modal ? (options.confirm === false ? undefined : args.at(-1)) : undefined;
+      },
       showErrorMessage: message => { seen.errors.push(message); }, showTextDocument: async value => { seen.opened.push(value); },
     },
     commands: { registerCommand: (id, handler) => { commands.set(id, handler); return { dispose: () => commands.delete(id) }; },
@@ -113,13 +121,18 @@ test('MCP constructor compatibility validates both positional and object definit
   }
   assert.throws(() => httpDefinition({ Uri: { parse: parseURI }, McpHttpServerDefinition: class {} }, endpoint, token), /更新/);
 });
-test('confirmed chat wizard registers a real MCP endpoint, creates templates and exposes file buttons', async t => {
+test('confirmed chat wizard registers a real MCP endpoint, creates templates and exposes setup buttons', async t => {
   const { root, seen, chat, values, commands } = await fixture(t);
   assert.deepEqual(await seen.provider.provideMcpServerDefinitions(), []);
   const output = await chat('初期設定');
   assert.ok(output.markdown.join('').includes('初期設定を保存しました'));
   assert.ok(!output.markdown.join('').includes('接続確認済み'));
-  assert.equal(output.buttons.length, 2); assert.equal(seen.inputs.length, 1);
+  assert.deepEqual(output.buttons, [
+    { command: 'contextkit.proxySetup', title: '自動圧縮を設定する' },
+    { command: 'contextkit.registerGlossary', title: '用語集を登録する' },
+    { command: 'contextkit.registerDesign', title: '設計書を登録する' },
+  ]);
+  assert.equal(seen.inputs.length, 1);
   assert.equal(values.get('contextkit.root'), root); assert.equal(values.get('contextkit.enabled'), true);
   assert.match(await fs.readFile(path.join(root, '.github/copilot-instructions.md'), 'utf8'), /kit_read.*自動的に選ぶ/);
   assert.equal(seen.providerId, 'contextkit.local'); assert.equal(seen.participantId, 'contextkit.assistant');
@@ -133,7 +146,6 @@ test('confirmed chat wizard registers a real MCP endpoint, creates templates and
   assert.equal(list.documents.length, 6);
   const status = await chat('状況'); assert.ok(status.markdown.join('').includes('用語集'));
   const stats = await chat('圧縮状況'); assert.ok(stats.markdown.join('').includes('未計測'));
-  await commands.get('contextkit.openGlossary')(); assert.equal(seen.opened.at(-1).fsPath, path.join(root, 'project-context/glossary.md'));
   await commands.get('contextkit.stats')(); assert.equal(seen.opened.at(-1).language, 'markdown');
   await commands.get('contextkit.disable')();
   assert.equal(values.get('contextkit.enabled'), false); assert.deepEqual(await seen.provider.provideMcpServerDefinitions(), []);
@@ -182,18 +194,41 @@ test('existing catalog makes repeated wizard a confirmed reuse without asking to
   assert.ok(output.markdown.join('').includes('新規作成 0件、追記 0件'));
   assert.equal(await fs.readFile(path.join(root, 'project-context/glossary.md'), 'utf8'), 'USER GLOSSARY');
 });
-test('chosen local Markdown design is registered and its open command uses that actual document', async t => {
-  const selectedFiles = [], { root, chat, commands, seen } = await fixture(t, { chooseDesign: true, selectedFiles });
+test('chosen local Markdown design is registered during initial setup', async t => {
+  const selectedFiles = [], { root, chat } = await fixture(t, { chooseDesign: true, selectedFiles });
   const design = path.join(root, 'my-design.md'); await fs.writeFile(design, '# MY DESIGN'); selectedFiles.push(uri(design));
-  await chat('初期設定'); await commands.get('contextkit.openDesign')();
-  assert.equal(seen.opened.at(-1).fsPath, design);
+  await chat('初期設定');
+  const catalog = JSON.parse(await fs.readFile(path.join(root, 'project-context/catalog.json'), 'utf8'));
+  assert.equal(catalog.documents.find(document => document.kind === 'design').path, 'my-design.md');
   assert.equal(await fs.readFile(design, 'utf8'), '# MY DESIGN');
 });
-test('opening a document uses validated catalog errors instead of parser details', async t => {
-  const { root, commands, seen } = await fixture(t);
-  await applySetup(await planSetup({ root, templateRoot: kitRoot }));
+test('registration buttons open file selection and replace glossary and design registrations after confirmation', async t => {
+  const registrationFiles = [], { root, chat, commands, seen } = await fixture(t, { registrationFiles });
+  await chat('初期設定');
+  const glossary = path.join(root, 'docs/glossary.md'), designOne = path.join(root, 'docs/design.md'), designTwo = path.join(root, 'docs/second.md');
+  await fs.mkdir(path.dirname(glossary), { recursive: true });
+  await Promise.all([
+    fs.writeFile(glossary, '# GLOSSARY'),
+    fs.writeFile(designOne, '# DESIGN'),
+    fs.writeFile(designTwo, '# SECOND'),
+  ]);
+  registrationFiles.push(uri(glossary));
+  await commands.get('contextkit.registerGlossary')();
+  registrationFiles.splice(0, 1, uri(designOne), uri(designTwo));
+  await commands.get('contextkit.registerDesign')();
+  const catalog = JSON.parse(await fs.readFile(path.join(root, 'project-context/catalog.json'), 'utf8'));
+  assert.equal(catalog.documents.find(document => document.kind === 'glossary').path, 'docs/glossary.md');
+  assert.deepEqual(catalog.documents.filter(document => document.kind === 'design').map(document => document.path), ['docs/design.md', 'docs/second.md']);
+  assert.equal(seen.openDialogs.at(-2).openLabel, 'この用語集を登録する');
+  assert.equal(seen.openDialogs.at(-1).openLabel, 'この設計書を登録する');
+  assert.match(seen.infos.at(-1)[0], /設計書を2件登録/);
+});
+test('registering a document uses validated catalog errors instead of parser details', async t => {
+  const registrationFiles = [], { root, commands, seen, chat } = await fixture(t, { registrationFiles });
+  await chat('初期設定');
+  const glossary = path.join(root, 'glossary-new.md'); await fs.writeFile(glossary, '# NEW'); registrationFiles.push(uri(glossary));
   await fs.writeFile(path.join(root, 'project-context/catalog.json'), '{broken');
-  const result = await commands.get('contextkit.openGlossary')();
+  const result = await commands.get('contextkit.registerGlossary')();
   assert.match(result.error, /完了できませんでした/);
   assert.equal(seen.errors.at(-1), 'Context Kitの処理を完了できませんでした。設定と対象ファイルを確認してください。');
 });

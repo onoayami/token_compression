@@ -67,7 +67,7 @@ export function createHandler(kit) {
     if (method === 'initialize') {
       initialized = true;
       return ok({ protocolVersion: VERSIONS.includes(params.protocolVersion) ? params.protocolVersion : VERSIONS[0],
-        capabilities: { tools: {} }, serverInfo: { name: 'copilot-context-kit', version: '0.5.0' } });
+        capabilities: { tools: {} }, serverInfo: { name: 'copilot-context-kit', version: '0.5.1' } });
     }
     if (!initialized) return error(id, -32000, 'Initialize first');
     if (method === 'tools/list') return ok({ tools: TOOLS });

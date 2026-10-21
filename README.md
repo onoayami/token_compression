@@ -151,8 +151,8 @@ kit_contextで共通知識の一覧を見せてください。
 
 - `@contextkit 状況`：登録資料と再確認の要否を表示
 - `@contextkit 圧縮状況`：資料処理の文字数・バイト数を表示
-- **Context Kit: 用語集を開く**：用語集を編集
-- **Context Kit: 設計書を開く**：登録済み設計書を開く
+- **Context Kit: 用語集を登録する**：既存のMarkdown用語集を選んで台帳へ登録
+- **Context Kit: 設計書を登録する**：既存のMarkdown設計書を選んで台帳へ登録
 
 `@contextkit 圧縮状況` は、Context Kitが読んだ資料の処理結果です。Headroom経由のCopilot全体のトークン数や料金を示すものではありません。
 

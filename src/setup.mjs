@@ -213,3 +213,94 @@ export async function applySetup(plan) {
     throw e;
   }
 }
+
+export async function planDocumentRegistration({ root, kind, documentPaths }) {
+  root = path.resolve(root);
+  if (!['glossary', 'design'].includes(kind)) throw new Error('Unsupported document kind');
+  const limit = kind === 'glossary' ? 1 : 10;
+  if (!Array.isArray(documentPaths) || documentPaths.length < 1 || documentPaths.length > limit)
+    throw new Error(`Choose between 1 and ${limit} Markdown files`);
+  const catalogName = 'project-context/catalog.json';
+  const currentText = await existingText(root, catalogName, 65536);
+  if (currentText === null) throw new Error('Run initial setup before registering documents');
+  let catalog;
+  try { catalog = validateCatalog(JSON.parse(stripBOM(currentText))); }
+  catch { throw new Error('project-context/catalog.json is invalid JSON; check BOM, trailing commas and UTF-8 encoding'); }
+  const existing = catalog.documents.filter(doc => doc.kind === kind);
+  if (!existing.length) throw new Error(`Catalog has no ${kind} registration`);
+
+  const kit = await ContextKit.create(root), selected = [], seen = new Set();
+  for (const requested of documentPaths) {
+    if (typeof requested !== 'string' || !requested.toLowerCase().endsWith('.md')) throw new Error('Choose Markdown (.md) files only');
+    const relativeRequested = path.isAbsolute(requested) ? path.relative(root, requested) : requested;
+    if (!relativeRequested || relativeRequested.startsWith(`..${path.sep}`) || path.isAbsolute(relativeRequested))
+      throw new Error('Document path is outside workspace');
+    const candidate = await kit.sourcePath(relativeRequested);
+    const info = await fs.stat(candidate);
+    if (!info.isFile() || info.size > kit.config.maxInputBytes) throw new Error('Document must be a regular file within the input byte limit');
+    const actual = await fs.realpath(candidate);
+    if (seen.has(actual)) continue;
+    seen.add(actual);
+    selected.push(path.relative(kit.realRoot, actual).replaceAll(path.sep, '/'));
+  }
+  if (!selected.length) throw new Error('Choose at least one Markdown file');
+
+  const otherPaths = new Set(catalog.documents.filter(doc => doc.kind !== kind).map(doc => doc.path.toLowerCase()));
+  if (selected.some(filename => otherPaths.has(filename.toLowerCase())))
+    throw new Error('Selected document is already registered as another kind');
+
+  const firstIndex = catalog.documents.findIndex(doc => doc.kind === kind);
+  const documents = catalog.documents.filter(doc => doc.kind !== kind);
+  const usedIds = new Set(documents.map(doc => doc.id));
+  let designSuffix = 1;
+  const nextDesignId = () => {
+    while (usedIds.has(designSuffix === 1 ? 'design' : `design-${designSuffix}`)) designSuffix++;
+    const id = designSuffix === 1 ? 'design' : `design-${designSuffix}`;
+    usedIds.add(id); designSuffix++;
+    return id;
+  };
+  const replacements = selected.map((filename, index) => {
+    const previous = existing[index];
+    if (previous) {
+      usedIds.add(previous.id);
+      return { ...previous, path: filename };
+    }
+    const base = existing[0];
+    return {
+      ...base,
+      id: nextDesignId(),
+      title: `設計書 ${index + 1}`,
+      path: filename,
+    };
+  });
+  documents.splice(firstIndex, 0, ...replacements);
+  const nextCatalog = validateCatalog({ schemaVersion: 1, documents });
+  return {
+    root,
+    catalogName,
+    beforeHash: digest(currentText),
+    beforePaths: existing.map(doc => doc.path),
+    selectedPaths: selected,
+    text: JSON.stringify(nextCatalog, null, 2) + '\n',
+  };
+}
+
+export async function applyDocumentRegistration(plan) {
+  const root = await fs.realpath(plan.root);
+  const filename = await safeTarget(root, plan.catalogName);
+  const current = await existingText(root, plan.catalogName, 65536);
+  if (current === null || digest(current) !== plan.beforeHash) throw new Error('Catalog changed; review the registration again');
+  const mode = (await fs.stat(filename)).mode & 0o777;
+  const temporary = path.join(root, `.contextkit-registration-${randomUUID()}.tmp`);
+  try {
+    await fs.writeFile(temporary, plan.text, { flag: 'wx', mode });
+    if (process.platform !== 'win32') await fs.chmod(temporary, mode);
+    const latest = await existingText(root, plan.catalogName, 65536);
+    if (latest === null || digest(latest) !== plan.beforeHash) throw new Error('Catalog changed; review the registration again');
+    await renameWithRetry(fs.rename, temporary, filename);
+  } finally {
+    try { await fs.unlink(temporary); }
+    catch (error) { if (error.code !== 'ENOENT') console.error(`Registration temporary cleanup failed: ${error.message}`); }
+  }
+  return { registered: plan.selectedPaths };
+}
