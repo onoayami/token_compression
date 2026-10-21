@@ -136,6 +136,7 @@ test('setup cancellation identifies the exact step and produces no files or enab
     const { root, chat, values, seen } = await fixture(t, options);
     const output = await chat('初期設定');
     assert.ok(output.markdown.join('').includes(expected));
+    assert.deepEqual(output.buttons[0], { command: 'contextkit.setup', title: '初期設定をもう一度開く' });
     assert.deepEqual(await fs.readdir(root), []); assert.equal(values.get('contextkit.enabled'), undefined);
     assert.deepEqual(await seen.provider.provideMcpServerDefinitions(), []);
   }
@@ -151,6 +152,7 @@ test('no-folder guidance and ordinary help do not create a project or send model
   const { root, chat, seen } = await fixture(t, { noFolders: true });
   const setup = await chat('初期設定');
   assert.ok(setup.markdown.join('').includes('作業フォルダが開かれていない'));
+  assert.equal(setup.buttons[0].command, 'contextkit.setup');
   assert.ok(seen.infos[0][0].includes('作業用フォルダ'));
   const help = await chat('実装を手伝って'); assert.ok(help.markdown.join('').includes('初期設定専用'));
   assert.equal(help.buttons[0].command, 'contextkit.setup'); assert.deepEqual(await fs.readdir(root), []);
