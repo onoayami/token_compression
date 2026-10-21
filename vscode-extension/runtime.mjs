@@ -6,13 +6,14 @@ import { HeadroomManager } from './headroom.mjs';
 
 export function determineIntent(request) {
   if (request.command === 'setup' || /初期設定|セットアップ|はじめる|始める|\bsetup\b/i.test(request.prompt || '')) return 'setup';
+  if (request.command === 'compress' || /自動圧縮.*(?:設定|導入|有効)/i.test(request.prompt || '')) return 'proxySetup';
   if (request.command === 'proxy' || /自動圧縮|プロキシ|\bproxy\b/i.test(request.prompt || '')) return 'proxy';
   if (request.command === 'stats' || /圧縮状況|統計|\bstats\b/i.test(request.prompt || '')) return 'stats';
   if (request.command === 'status' || /状況|状態|一覧|\bstatus\b/i.test(request.prompt || '')) return 'overview';
   return 'help';
 }
 export function httpDefinition(vscode, endpoint, token) {
-  const label = 'Context Kit（拡張内蔵）', uri = vscode.Uri.parse(endpoint), headers = { Authorization: `Bearer ${token}` }, version = '0.5.2';
+  const label = 'Context Kit（拡張内蔵）', uri = vscode.Uri.parse(endpoint), headers = { Authorization: `Bearer ${token}` }, version = '0.5.3';
   // The stable API has used positional and object-shaped constructor variants.
   // Validate the constructed fields; do not silently register an unusable endpoint.
   for (const create of [
@@ -273,8 +274,14 @@ export async function activate(context, vscode, {
         }
       } else if (intent === 'overview') stream.markdown(fenced(formatContextOverview(JSON.parse(await requireKit().context()))));
       else if (intent === 'stats') stream.markdown(fenced(formatStats(await requireKit().stats())));
-      else if (intent === 'proxy') stream.markdown(fenced(JSON.stringify(await proxyStatus(), null, 2)));
-      else { stream.markdown('初期設定専用の窓口です。**@contextkit 初期設定**、**@contextkit 状況**、**@contextkit 圧縮状況** が使えます。一般の実装や相談は通常のCopilotへ戻って依頼してください。'); stream.button({ command: 'contextkit.setup', title: '初期設定を始める' }); }
+      else if (intent === 'proxySetup') {
+        stream.progress('自動圧縮の設定画面を開きます。');
+        const result = await proxySetup();
+        stream.markdown(result.cancelled ? '**自動圧縮の設定をキャンセルしました。**' :
+          result.authenticationRequired ? '**Headroomを導入しました。表示された案内から認証すると、自動圧縮を開始できます。**' :
+          '**自動圧縮の設定が完了しました。**');
+      } else if (intent === 'proxy') stream.markdown(fenced(JSON.stringify(await proxyStatus(), null, 2)));
+      else { stream.markdown('初期設定専用の窓口です。**@contextkit /setup**、**@contextkit /compress**、**@contextkit /status**、**@contextkit /stats** が使えます。一般の実装や相談は通常のCopilotへ戻って依頼してください。'); stream.button({ command: 'contextkit.setup', title: '初期設定を始める' }); stream.button({ command: 'contextkit.proxySetup', title: '自動圧縮を設定する' }); }
     } catch (e) {
       console.error(`Context Kit chat failed: ${typeof e?.code === 'string' ? e.code : 'CONTEXTKIT_CHAT_FAILED'}`);
       stream.markdown('設定・確認を完了できませんでした。ファイルと設定を確認してから、もう一度実行してください。');

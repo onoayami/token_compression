@@ -72,9 +72,10 @@ async function fixture(t, options = {}) {
     headroomManager: options.headroomManager,
   });
   t.after(async () => { await manager.dispose(); for (const disposable of context.subscriptions) disposable.dispose(); });
-  const chat = async prompt => {
+  const chat = async input => {
+    const request = typeof input === 'string' ? { prompt: input } : input;
     const output = { markdown: [], progress: [], buttons: [] };
-    await seen.participant({ prompt }, {}, { markdown: text => output.markdown.push(text), progress: text => output.progress.push(text), button: button => output.buttons.push(button) });
+    await seen.participant(request, {}, { markdown: text => output.markdown.push(text), progress: text => output.progress.push(text), button: button => output.buttons.push(button) });
     return output;
   };
   return { root, context, vscode, seen, commands, values, globalValues, manager, chat, foldersChanged };
@@ -94,9 +95,12 @@ function delayedServerFactory() {
   };
   return state;
 }
-test('chat phrase routes only setup, status and stats; regular messages show help', () => {
+test('chat phrase routes setup, automatic compression, status and stats; regular messages show help', () => {
   assert.equal(determineIntent({ prompt: '初期設定' }), 'setup');
   assert.equal(determineIntent({ command: 'setup' }), 'setup');
+  assert.equal(determineIntent({ command: 'compress' }), 'proxySetup');
+  assert.equal(determineIntent({ prompt: '自動圧縮を設定したい' }), 'proxySetup');
+  assert.equal(determineIntent({ prompt: '自動圧縮の状態' }), 'proxy');
   assert.equal(determineIntent({ prompt: '圧縮状況' }), 'stats');
   assert.equal(determineIntent({ command: 'status' }), 'overview');
   assert.equal(determineIntent({ prompt: '一覧' }), 'overview');
@@ -112,6 +116,18 @@ test('proxy status distinguishes an unowned process on the configured port', asy
   await commands.get('contextkit.proxyStatus')();
   assert.match(seen.infos.at(-1)[0], /別プロセスが127\.0\.0\.1:8787で稼働/);
   assert.match(seen.infos.at(-1)[0], /所有・停止しません/);
+});
+test('chat /compress opens the automatic compression installation flow', async t => {
+  let installs = 0;
+  const headroomManager = {
+    install: async () => { installs++; },
+    dispose: async () => {},
+  };
+  const { chat, seen } = await fixture(t, { headroomManager });
+  const output = await chat({ command: 'compress' });
+  assert.equal(installs, 1);
+  assert.match(seen.infos[0][0], /Headroom 0\.41\.0をインストール/);
+  assert.match(output.markdown.join(''), /Headroomを導入しました/);
 });
 test('MCP constructor compatibility validates both positional and object definitions and rejects unusable APIs', () => {
   const endpoint = 'http://127.0.0.1:51234/mcp', token = 'testing-token';

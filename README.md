@@ -85,6 +85,8 @@ GitHub Copilotで扱う会話や資料を整理し、必要な情報だけを使
 
 以後は、設定済みのVS Codeを起動すると自動圧縮も再開します。
 
+Copilot Chatで `@contextkit /compress` を選んでも、同じ設定画面を開けます。
+
 ### 自動圧縮の仕組み
 
 ```text

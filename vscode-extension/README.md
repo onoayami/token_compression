@@ -68,6 +68,7 @@ HeadroomはGitHub Device FlowとCopilot Chat用OAuthクライアントIDを使�
 
 - **@contextkit 状況**：登録資料と出力記録・再確認の要否
 - **@contextkit 圧縮状況**：文字数・バイト数による圧縮状況
+- **@contextkit /compress**：自動圧縮の設定画面を開く
 - コマンド一覧の **Context Kit: 用語集を登録する／設計書を登録する**：既存のMarkdown資料を選んで台帳へ登録する
 
 この窓口は初期設定と状況確認の専用です。一般の相談や実装には通常のCopilotエージェントチャットを使います。
