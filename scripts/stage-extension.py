@@ -27,6 +27,11 @@ for folder in ['src','project-context','integration/prompts']:
                 raise SystemExit('Unexpected private/symlinked package input')
             destination=target/relative;destination.parent.mkdir(parents=True,exist_ok=True)
             shutil.copyfile(p,destination)
+instruction=ROOT/'integration/copilot-instructions.snippet.md'
+instruction_target=out/'kit/integration/copilot-instructions.snippet.md'
+if instruction.is_symlink():raise SystemExit('Unexpected symlinked package input')
+instruction_target.parent.mkdir(parents=True,exist_ok=True)
+shutil.copyfile(instruction,instruction_target)
 manifest=json.loads((out/'package.json').read_text(encoding='utf-8'))
 if not (out/manifest['main']).is_file():raise SystemExit('Missing extension entrypoint')
 if (out/'node_modules').exists():raise SystemExit('Unexpected dependencies')

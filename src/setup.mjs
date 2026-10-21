@@ -8,6 +8,9 @@ const digest = text => createHash('sha256').update(text, 'utf8').digest('hex');
 const DOCS = ['overview.md', 'glossary.md', 'requirements.md', 'design/overview.md', 'decisions.md', 'questions.md'];
 const PROMPTS = ['context-handoff-save', 'context-handoff-resume', 'context-read', 'context-stats', 'context-overview', 'context-question-propose'];
 const REQUIRED_IGNORES = ['.context-kit-cache/', '.context-kit/'];
+const INSTRUCTIONS_PATH = '.github/copilot-instructions.md';
+const INSTRUCTIONS_MARKER = '<!-- context-kit:auto-compression:start -->';
+const APPEND_TARGETS = new Set(['.gitignore', INSTRUCTIONS_PATH]);
 export async function renameWithRetry(rename, from, to, { attempts = 5, delay = 100 } = {}) {
   let lastError;
   for (let attempt = 0; attempt < attempts; attempt++) {
@@ -100,6 +103,21 @@ export async function planSetup({ root, templateRoot, description = '', designPa
     const relative = `.github/prompts/${name}.prompt.md`;
     await queueMissing(relative, await fs.readFile(path.join(templateRoot, 'integration', 'prompts', `${name}.prompt.md`), 'utf8'));
   }
+  const instructionTemplate = await fs.readFile(path.join(templateRoot, 'integration', 'copilot-instructions.snippet.md'), 'utf8');
+  const currentInstructions = await existingText(root, INSTRUCTIONS_PATH, 65536);
+  if (currentInstructions === null) changes.push({ path: INSTRUCTIONS_PATH, action: 'create', text: instructionTemplate });
+  else if (currentInstructions.includes(INSTRUCTIONS_MARKER)) preserved.push(INSTRUCTIONS_PATH);
+  else {
+    const eol = currentInstructions.includes('\r\n') ? '\r\n' : '\n';
+    const block = instructionTemplate.replace(/\r?\n/g, eol);
+    const separator = currentInstructions ? (currentInstructions.endsWith('\n') ? eol : eol + eol) : '';
+    changes.push({
+      path: INSTRUCTIONS_PATH,
+      action: 'append',
+      text: currentInstructions + separator + block,
+      beforeHash: digest(currentInstructions),
+    });
+  }
   const ignore = await existingText(root, '.gitignore', 65536);
   const lines = ignore === null ? [] : ignore.split(/\r?\n/).map(line => line.trim().replace(/^\//, ''));
   const meaningful = lines.map((line, index) => ({ line, index })).filter(({ line }) => line && !line.startsWith('#'));
@@ -119,11 +137,11 @@ export async function planSetup({ root, templateRoot, description = '', designPa
   return { root, changes, preserved, warnings };
 }
 export async function applySetup(plan) {
-  const root = await fs.realpath(plan.root), created = [], createdDirs = [], updated = [];
+  const root = await fs.realpath(plan.root), created = [], createdDirs = [], updated = [], appended = [];
   for (const change of plan.changes) {
     const current = await existingText(root, change.path);
     if ((change.action === 'create' && current !== null) || (change.action === 'append' && (current === null || digest(current) !== change.beforeHash))) throw new Error(`Setup target changed; review the plan again: ${change.path}`);
-    if (!['create', 'append'].includes(change.action) || (change.action === 'append' && change.path !== '.gitignore')) throw new Error('Unsupported setup operation');
+    if (!['create', 'append'].includes(change.action) || (change.action === 'append' && !APPEND_TARGETS.has(change.path))) throw new Error('Unsupported setup operation');
   }
   try {
     for (const change of plan.changes.filter(c => c.action === 'create')) {
@@ -147,9 +165,9 @@ export async function applySetup(plan) {
         await fs.writeFile(temporary, change.text, { flag: 'wx', mode });
         if (process.platform !== 'win32') await fs.chmod(temporary, mode);
         const latest = await existingText(root, change.path);
-        if (latest === null || digest(latest) !== change.beforeHash) throw new Error('Gitignore changed during setup');
+        if (latest === null || digest(latest) !== change.beforeHash) throw new Error(`Setup append target changed: ${change.path}`);
         await renameWithRetry(fs.rename, temporary, filename);
-        updated.push(change.path);
+        updated.push(change.path); appended.push({ path: change.path, before: current, afterHash: digest(change.text), mode });
       } finally {
         try { await fs.unlink(temporary); }
         catch (error) { if (error.code !== 'ENOENT') console.error(`Setup temporary cleanup failed: ${error.message}`); }
@@ -157,6 +175,28 @@ export async function applySetup(plan) {
     }
     return { root, created: created.map(c => c.path), updated, preserved: plan.preserved, warnings: plan.warnings };
   } catch (e) {
+    for (const change of appended.reverse()) {
+      try {
+        const current = await existingText(root, change.path);
+        if (current === null || digest(current) !== change.afterHash) {
+          console.error(`Setup append rollback skipped because target changed: ${change.path}`);
+          continue;
+        }
+        const filename = await safeTarget(root, change.path), temporary = path.join(root, `.contextkit-setup-${randomUUID()}.tmp`);
+        try {
+          await fs.writeFile(temporary, change.before, { flag: 'wx', mode: change.mode });
+          if (process.platform !== 'win32') await fs.chmod(temporary, change.mode);
+          const latest = await existingText(root, change.path);
+          if (latest === null || digest(latest) !== change.afterHash) throw new Error(`Setup append rollback target changed: ${change.path}`);
+          await renameWithRetry(fs.rename, temporary, filename);
+        } finally {
+          try { await fs.unlink(temporary); }
+          catch (error) { if (error.code !== 'ENOENT') console.error(`Setup append rollback cleanup failed: ${error.message}`); }
+        }
+      } catch (rollbackError) {
+        console.error(`Setup append rollback failed: ${rollbackError.message}`);
+      }
+    }
     for (const change of created.reverse()) {
       const current = await existingText(root, change.path).catch(() => null);
       if (current !== null && digest(current) === digest(change.text)) {

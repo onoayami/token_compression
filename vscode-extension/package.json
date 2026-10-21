@@ -2,7 +2,7 @@
   "name": "contextkit-easy",
   "displayName": "Context Kit — かんたん初期設定",
   "description": "チャットに @contextkit 初期設定 と入力して、根拠付き引き継ぎとMarkdown資料の棚を設定します。",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "publisher": "onoayami",
   "license": "MIT",
   "engines": { "vscode": "^1.102.0" },

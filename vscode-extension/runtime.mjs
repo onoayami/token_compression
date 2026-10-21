@@ -10,7 +10,7 @@ export function determineIntent(request) {
   return 'help';
 }
 export function httpDefinition(vscode, endpoint, token) {
-  const label = 'Context Kit（拡張内蔵）', uri = vscode.Uri.parse(endpoint), headers = { Authorization: `Bearer ${token}` }, version = '0.4.1';
+  const label = 'Context Kit（拡張内蔵）', uri = vscode.Uri.parse(endpoint), headers = { Authorization: `Bearer ${token}` }, version = '0.4.2';
   // The stable API has used positional and object-shaped constructor variants.
   // Validate the constructed fields; do not silently register an unusable endpoint.
   for (const create of [
@@ -164,7 +164,7 @@ export async function activate(context, vscode, {
           stream.button({ command: 'contextkit.setup', title: '初期設定をもう一度開く' });
         }
         else {
-          stream.markdown(`**初期設定を保存しました。接続確認は次の操作で行います。**\n\n新規作成 ${result.created.length}件、追記 ${result.updated.length}件。既存の資料は上書きしていません。\n\n${result.warnings.join('\n\n')}\n\n今後は通常のCopilotエージェントチャットで「kit_contextで共通知識の一覧を見せて」と依頼できます。接続の信頼確認は内容を読んで承認してください。\n\n用語集や設計書は、下のボタンから開けます。`);
+          stream.markdown(`**初期設定を保存しました。接続確認は次の操作で行います。**\n\n新規作成 ${result.created.length}件、追記 ${result.updated.length}件。既存の資料は上書きしていません。\n\n${result.warnings.join('\n\n')}\n\n通常のCopilotには、対応するログ・JSON・テキスト・Markdownを読む際にkit_readを優先する指示を追加しました。モデル判断や実行許可によっては自動で呼ばれない場合があります。会話履歴そのものは自動圧縮しません。\n\n「kit_contextで共通知識の一覧を見せて」と依頼し、接続とツール実行を確認してください。\n\n用語集や設計書は、下のボタンから開けます。`);
           stream.button({ command: 'contextkit.openGlossary', title: '用語集を開く' });
           stream.button({ command: 'contextkit.openDesign', title: '設計書を開く' });
         }
