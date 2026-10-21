@@ -159,7 +159,10 @@ export async function activate(context, vscode, {
       const intent = determineIntent(request);
       if (intent === 'setup') {
         stream.progress('初期設定の入力欄を開きます。'); const result = await setup();
-        if (result.cancelled) stream.markdown(result.message);
+        if (result.cancelled) {
+          stream.markdown(result.message);
+          stream.button({ command: 'contextkit.setup', title: '初期設定をもう一度開く' });
+        }
         else {
           stream.markdown(`**初期設定を保存しました。接続確認は次の操作で行います。**\n\n新規作成 ${result.created.length}件、追記 ${result.updated.length}件。既存の資料は上書きしていません。\n\n${result.warnings.join('\n\n')}\n\n今後は通常のCopilotエージェントチャットで「kit_contextで共通知識の一覧を見せて」と依頼できます。接続の信頼確認は内容を読んで承認してください。\n\n用語集や設計書は、下のボタンから開けます。`);
           stream.button({ command: 'contextkit.openGlossary', title: '用語集を開く' });
